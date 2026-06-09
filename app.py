@@ -35,6 +35,21 @@ Medical Devices: medical device, medical devices, medtech, hulpmiddel, hulpmidde
 Healthcare: healthcare, health care, zorg, ziekenhuis, clinic, kliniek
 Overig: overig"""
 
+SECTOR_PRESETS = {
+    "Automatisch": {
+        "buckets": [],
+        "include_rule_buckets": [],
+    },
+    "Zorg": {
+        "buckets": ["GGZ", "MSZ", "VVT", "WLZ", "Overig"],
+        "include_rule_buckets": ["GGZ", "MSZ", "VVT", "WLZ", "Overig"],
+    },
+    "Pharma / biotech": {
+        "buckets": ["Pharma", "Biotech", "CDMO", "Medical Devices", "Healthcare", "Overig"],
+        "include_rule_buckets": ["Pharma", "Biotech", "CDMO", "Medical Devices", "Healthcare", "Overig"],
+    },
+}
+
 
 BADGES = (
     "Dit profiel heeft een LinkedIn Premium-abonnement.",
@@ -77,6 +92,30 @@ def parse_sector_rules(text: str, allowed_buckets: list[str]) -> dict[str, list[
             continue
         rules[bucket].extend(tokens(keywords_raw))
     return rules
+
+
+def sector_preset_for_df(df: pd.DataFrame) -> str:
+    blob = " ".join(
+        " ".join(clean(row.get(c)) for c in ["huidig_bedrijf", "functietitel", "sector", "info_eerdere_rollen"])
+        for _, row in df.head(200).iterrows()
+    ).lower()
+    zorg_score = sum(
+        blob.count(term)
+        for term in ["zorgverkoop", "zorgcontract", "ggz", "ziekenhuis", "ouderenzorg", "wlz", "vvt", "parnassia", "pluryn"]
+    )
+    pharma_score = sum(
+        blob.count(term)
+        for term in ["qualified person", "batch release", "gmp", "pharma", "pharmaceutical", "biotech", "cdmo", "medical device"]
+    )
+    return "Pharma / biotech" if pharma_score > zorg_score else "Zorg"
+
+
+def sector_config(preset_name: str, df: pd.DataFrame) -> tuple[list[str], dict[str, list[str]], str]:
+    resolved = sector_preset_for_df(df) if preset_name == "Automatisch" else preset_name
+    preset = SECTOR_PRESETS[resolved]
+    buckets = preset["buckets"]
+    rules = parse_sector_rules(DEFAULT_SECTOR_RULES, preset["include_rule_buckets"])
+    return buckets, rules, resolved
 
 
 def is_badge(text: str) -> bool:
@@ -424,16 +463,11 @@ def main() -> None:
             )
         )
         exclude_terms = tokens(st.text_area("Twijfel-/uitsluitingskeywords", "recruiter, student, intern, finance consultant, treasury"))
-        sector_buckets = [
-            clean(x)
-            for x in re.split(r"[,;\n]+", st.text_area("Sector-buckets", "Pharma, Biotech, CDMO, Medical Devices, Healthcare, Overig"))
-            if clean(x)
-        ]
-        sector_rules_text = st.text_area(
-            "Sector-keywords per bucket",
-            DEFAULT_SECTOR_RULES,
-            height=260,
-            help="Format: Bucket: keyword, keyword, keyword. Alleen regels waarvan de bucket ook in Sector-buckets staat worden gebruikt.",
+        sector_preset = st.selectbox(
+            "Sectorindeling",
+            ["Automatisch", "Zorg", "Pharma / biotech"],
+            index=0,
+            help="Automatisch kiest zelf tussen zorg-buckets en pharma/biotech-buckets. De onderliggende keywordregels zitten verborgen in de app.",
         )
 
     uploaded = st.file_uploader("Upload Word, Excel of CSV", type=["docx", "xlsx", "xls", "csv"])
@@ -447,9 +481,10 @@ def main() -> None:
         st.error("Ik kon geen profielblokken herkennen. Probeer een Excel/CSV of controleer of de Word-export LinkedIn-profielregels bevat.")
         st.stop()
 
+    sector_buckets, sector_rules, resolved_preset = sector_config(sector_preset, df)
     if sector_buckets:
-        sector_rules = parse_sector_rules(sector_rules_text, sector_buckets)
         df["sector"] = df.apply(lambda row: classify_sector(row, sector_buckets, sector_rules), axis=1)
+        st.caption(f"Gebruikte sectorindeling: {resolved_preset}")
 
     st.subheader("1. Ingelezen profielen")
     st.write(f"{len(df)} profielen ingelezen.")
