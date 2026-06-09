@@ -50,6 +50,62 @@ SECTOR_PRESETS = {
     },
 }
 
+DEFAULT_INCLUDE_TERMS = {
+    "Zorg": [
+        "zorgverkoop",
+        "zorgverkoper",
+        "zorgcontractering",
+        "zorgcontract",
+        "contractering",
+        "zorginkoop",
+        "zorginkoper",
+        "zorgbemiddeling",
+        "zorgbemiddelaar",
+        "accountmanager zorg",
+        "adviseur zorgverkoop",
+        "strategisch zorgverkoper",
+        "relatiebeheer",
+        "wlz",
+        "zvw",
+        "wmo",
+        "jeugdwet",
+    ],
+    "Pharma / biotech": [
+        "qualified person",
+        "qp",
+        "q.p.",
+        "gmp",
+        "batch release",
+        "qa",
+        "quality assurance",
+        "quality",
+        "regulatory affairs",
+        "regulatory",
+        "pharma",
+        "pharmaceutical",
+        "biotech",
+        "cdmo",
+        "medical device",
+        "medtech",
+    ],
+}
+
+DEFAULT_EXCLUDE_TERMS = [
+    "recruiter",
+    "student",
+    "stagiair",
+    "intern",
+    "finance consultant",
+    "treasury",
+    "opticien",
+    "ergotherapeut",
+    "fysiotherapeut",
+    "verpleegkundige",
+    "docent",
+    "hogeschooldocent",
+    "raad van toezicht",
+]
+
 
 BADGES = (
     "Dit profiel heeft een LinkedIn Premium-abonnement.",
@@ -401,51 +457,115 @@ def summary_frames(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
 
 def make_excel(df: pd.DataFrame) -> bytes:
     output = BytesIO()
-    summaries = summary_frames(df)
+    excel_df = df[STANDARD_COLUMNS].copy().where(pd.notna(df[STANDARD_COLUMNS]), "")
+    max_row = 2000
+    total_formula = f'=COUNTA(Profielen!$A$2:$A${max_row})'
+    top_companies = excel_df["huidig_bedrijf"].replace("", "Onbekend").fillna("Onbekend").value_counts().head(20).index.tolist()
+    top_sectors = excel_df["sector"].replace("", "Onbekend").fillna("Onbekend").value_counts().head(20).index.tolist()
+    top_locations = excel_df["locatie"].replace("", "Onbekend").fillna("Onbekend").value_counts().head(20).index.tolist()
+    top_education = (
+        excel_df["hoogst_afgeronde_opleiding"]
+        .replace("", "Onbekend")
+        .fillna("Onbekend")
+        .value_counts()
+        .head(20)
+        .index.tolist()
+    )
+    tenure_buckets = ["<1 jaar", "1-2 jaar", "3-5 jaar", "6-10 jaar", "10+ jaar", "Onbekend"]
+
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        df.to_excel(writer, sheet_name="Profielen", index=False)
+        excel_df.to_excel(writer, sheet_name="Profielen", index=False)
         workbook = writer.book
+        workbook.set_calc_mode("auto")
         ws = writer.sheets["Profielen"]
         header_fmt = workbook.add_format({"bold": True, "font_color": "white", "bg_color": "#155E75", "border": 1})
         wrap = workbook.add_format({"text_wrap": True, "valign": "top"})
-        for col_num, col in enumerate(df.columns):
+        for col_num, col in enumerate(excel_df.columns):
             ws.write(0, col_num, col, header_fmt)
-            width = min(max(14, int(df[col].astype(str).str.len().quantile(0.9) if len(df) else 14)), 42)
+            width = min(max(14, int(excel_df[col].astype(str).str.len().quantile(0.9) if len(excel_df) else 14)), 42)
             ws.set_column(col_num, col_num, width, wrap)
+        ws.set_column(5, 5, 16)
         ws.freeze_panes(1, 1)
-        ws.autofilter(0, 0, len(df), len(df.columns) - 1)
+        ws.autofilter(0, 0, len(excel_df), len(excel_df.columns) - 1)
 
         summary = workbook.add_worksheet("Samenvatting")
         title_fmt = workbook.add_format({"bold": True, "font_color": "white", "bg_color": "#155E75", "font_size": 14})
         sub_fmt = workbook.add_format({"bold": True, "bg_color": "#E0F2FE"})
+        header_fmt_2 = workbook.add_format({"bold": True, "bg_color": "#E0F2FE", "border": 1})
         pct_fmt = workbook.add_format({"num_format": "0.0%"})
+        num_fmt = workbook.add_format({"num_format": "0.0"})
         summary.write(0, 0, "Market mapping - samenvatting", title_fmt)
-        row = 2
-        for name, frame in summaries.items():
-            summary.write(row, 0, name, sub_fmt)
-            for c, col in enumerate(frame.columns):
-                summary.write(row + 1, c, col, sub_fmt)
-            for r, values in enumerate(frame.values.tolist(), start=row + 2):
-                for c, value in enumerate(values):
-                    summary.write_blank(r, c, None) if pd.isna(value) else summary.write(r, c, value)
-            if "percentage" in frame.columns:
-                pct_col = list(frame.columns).index("percentage")
-                summary.set_column(pct_col, pct_col, 12, pct_fmt)
-            if name in {"Sectoren", "Locaties"} and len(frame):
-                chart = workbook.add_chart({"type": "column"})
-                chart.add_series(
+        summary.write(1, 0, "Deze tab rekent mee wanneer je waarden op tab Profielen aanpast.", None)
+
+        summary.write_row(3, 0, ["Metriek", "Waarde", "Percentage", "Opmerking"], header_fmt_2)
+        kpis = [
+            ("Profielen", total_formula, '=IF($B$5=0,"",1)', "Telt namen op tab Profielen"),
+            ("Met huidig bedrijf", f'=COUNTIF(Profielen!$B$2:$B${max_row},"<>")', '=IF($B$5=0,"",$B5/$B$5)', ""),
+            ("Met tenure", f'=COUNT(Profielen!$F$2:$F${max_row})', '=IF($B$5=0,"",$B6/$B$5)', ""),
+            ("Gemiddelde tenure", f'=IFERROR(AVERAGE(Profielen!$F$2:$F${max_row}),"")', "", "In jaren"),
+            ("Met eerdere rollen", f'=COUNTIF(Profielen!$G$2:$G${max_row},"<>")', '=IF($B$5=0,"",$B8/$B$5)', ""),
+            ("Met opleiding", f'=COUNTIF(Profielen!$H$2:$H${max_row},"<>")', '=IF($B$5=0,"",$B9/$B$5)', ""),
+            ("Met activiteit", f'=COUNTIF(Profielen!$J$2:$J${max_row},"<>")', '=IF($B$5=0,"",$B10/$B$5)', ""),
+        ]
+        for offset, (label, value_formula, pct_formula, note) in enumerate(kpis, start=4):
+            summary.write(offset, 0, label)
+            summary.write_formula(offset, 1, value_formula, num_fmt if label == "Gemiddelde tenure" else None)
+            if pct_formula:
+                summary.write_formula(offset, 2, pct_formula, pct_fmt)
+            summary.write(offset, 3, note)
+
+        def write_count_block(start_row: int, title: str, labels: Iterable[str], source_col: str, chart: bool = True) -> int:
+            labels = list(labels)
+            summary.write(start_row, 0, title, sub_fmt)
+            summary.write_row(start_row + 1, 0, ["categorie", "aantal", "percentage"], header_fmt_2)
+            for i, label in enumerate(labels, start=start_row + 2):
+                summary.write(i, 0, label)
+                if label == "Onbekend":
+                    formula = f'=COUNTIFS(Profielen!$A$2:$A${max_row},"<>",Profielen!${source_col}$2:${source_col}${max_row},"")'
+                else:
+                    safe_label = str(label).replace('"', '""')
+                    formula = f'=COUNTIF(Profielen!${source_col}$2:${source_col}${max_row},"{safe_label}")'
+                summary.write_formula(i, 1, formula)
+                summary.write_formula(i, 2, f'=IF($B$5=0,"",$B{i + 1}/$B$5)', pct_fmt)
+            if chart and labels:
+                chart_obj = workbook.add_chart({"type": "column"})
+                chart_end = start_row + 1 + min(len(labels), 10)
+                chart_obj.add_series(
                     {
-                        "name": name,
-                        "categories": ["Samenvatting", row + 2, 0, row + 1 + min(len(frame), 10), 0],
-                        "values": ["Samenvatting", row + 2, 1, row + 1 + min(len(frame), 10), 1],
+                        "name": title,
+                        "categories": ["Samenvatting", start_row + 2, 0, chart_end, 0],
+                        "values": ["Samenvatting", start_row + 2, 1, chart_end, 1],
                     }
                 )
-                chart.set_title({"name": name})
-                chart.set_legend({"none": True})
-                summary.insert_chart(row, 5, chart, {"x_scale": 1.25, "y_scale": 1.1})
-            row += len(frame) + 4
+                chart_obj.set_title({"name": title})
+                chart_obj.set_legend({"none": True})
+                summary.insert_chart(start_row, 5, chart_obj, {"x_scale": 1.25, "y_scale": 1.1})
+            return start_row + len(labels) + 4
+
+        row = 13
+        row = write_count_block(row, "Bedrijven", top_companies, "B", chart=False)
+        row = write_count_block(row, "Sectoren", top_sectors, "E", chart=True)
+        row = write_count_block(row, "Locaties", top_locations, "D", chart=True)
+        row = write_count_block(row, "Opleiding", top_education, "H", chart=False)
+
+        summary.write(row, 0, "Tenure-buckets", sub_fmt)
+        summary.write_row(row + 1, 0, ["categorie", "aantal", "percentage"], header_fmt_2)
+        tenure_formulas = [
+            f'=COUNTIFS(Profielen!$F$2:$F${max_row},">=0",Profielen!$F$2:$F${max_row},"<1")',
+            f'=COUNTIFS(Profielen!$F$2:$F${max_row},">=1",Profielen!$F$2:$F${max_row},"<=2")',
+            f'=COUNTIFS(Profielen!$F$2:$F${max_row},">=3",Profielen!$F$2:$F${max_row},"<=5")',
+            f'=COUNTIFS(Profielen!$F$2:$F${max_row},">=6",Profielen!$F$2:$F${max_row},"<=10")',
+            f'=COUNTIF(Profielen!$F$2:$F${max_row},">10")',
+            f'=$B$5-COUNT(Profielen!$F$2:$F${max_row})',
+        ]
+        for i, (label, formula) in enumerate(zip(tenure_buckets, tenure_formulas), start=row + 2):
+            summary.write(i, 0, label)
+            summary.write_formula(i, 1, formula)
+            summary.write_formula(i, 2, f'=IF($B$5=0,"",$B{i + 1}/$B$5)', pct_fmt)
+
         summary.set_column(0, 0, 34)
         summary.set_column(1, 2, 14)
+        summary.set_column(3, 3, 48)
     return output.getvalue()
 
 
@@ -456,18 +576,18 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Instellingen")
-        include_terms = tokens(
-            st.text_area(
-                "Doelprofiel-keywords",
-                "zorgverkoop, zorgcontractering, accountmanager, qualified person, qp, gmp, qa, quality assurance, batch release, pharma",
-            )
-        )
-        exclude_terms = tokens(st.text_area("Twijfel-/uitsluitingskeywords", "recruiter, student, intern, finance consultant, treasury"))
         sector_preset = st.selectbox(
             "Sectorindeling",
             ["Automatisch", "Zorg", "Pharma / biotech"],
             index=0,
             help="Automatisch kiest zelf tussen zorg-buckets en pharma/biotech-buckets. De onderliggende keywordregels zitten verborgen in de app.",
+        )
+        extra_exclude_terms = tokens(
+            st.text_area(
+                "Extra twijfel-/uitsluitingswoorden",
+                "",
+                help="Optioneel. De app gebruikt al een standaardlijst. Vul hier alleen extra woorden in die voor jouw zoekopdracht verdacht zijn.",
+            )
         )
 
     uploaded = st.file_uploader("Upload Word, Excel of CSV", type=["docx", "xlsx", "xls", "csv"])
@@ -485,6 +605,8 @@ def main() -> None:
     if sector_buckets:
         df["sector"] = df.apply(lambda row: classify_sector(row, sector_buckets, sector_rules), axis=1)
         st.caption(f"Gebruikte sectorindeling: {resolved_preset}")
+    include_terms = DEFAULT_INCLUDE_TERMS.get(resolved_preset, DEFAULT_INCLUDE_TERMS["Pharma / biotech"])
+    exclude_terms = DEFAULT_EXCLUDE_TERMS + extra_exclude_terms
 
     st.subheader("1. Ingelezen profielen")
     st.write(f"{len(df)} profielen ingelezen.")
