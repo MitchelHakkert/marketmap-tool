@@ -24,6 +24,17 @@ STANDARD_COLUMNS = [
     "activiteit",
 ]
 
+DEFAULT_SECTOR_RULES = """GGZ: ggz, geestelijke gezondheidszorg, psychiatrie, psychiatrisch, verslavingszorg, autisme, mental care, parnassia, arkin, yulius, pro persona, altrecht, lentis, mondriaan, fivoor, dimence, ggze, ggz breburg, ggz centraal, tactus, ggz drenthe, ggz friesland, reinier van arkel, emergis, karakter, vnn, novadic, eleos, lievegoed, de viersprong, yes we can, hsk groep, mentaal beter
+MSZ: msz, ziekenhuis, ziekenhuizen, medisch centrum, umc, universitair medisch, kliniek, klinieken, diagnostiek, laboratorium, zbc, erasmus mc, amsterdam umc, umcg, radboudumc, lumc, olvg, zuyderland, maastricht umc, canisius, st. antonius, elisabeth-tweesteden, etz, bravis, maxima mc, máxima mc, hagaziekenhuis, gelre, alrijne, adrz, tergooi, martini, bergman, diakonessenhuis, franciscus, antoni van leeuwenhoek, jeroen bosch, viecuri, catharina, rijnstate, dijklander, slingeland, zgt, flevoziekenhuis, maasstad, laurentius ziekenhuis, curaMare, curamare, dicoon, acibadem, leiden university medical, medisch spectrum twente, amphia, saxenburgh, sjg weert, caresq, rivas zorggroep, unilabs
+VVT: vvt, ouderenzorg, thuiszorg, verpleeghuis, verpleeghuizen, woonzorg, wijkverpleging, zorgcentrum, zorgcentra, brabantzorg, careyn, laurens, cordaan, aafje, tantelouise, de zorgcirkel, beweging 3.0, zonnehuisgroep, zorgsaam, actief zorg, bloezem, lelie zorggroep, surplus, mijzo, zorggroep solis, carinova, zinn, magentazorg, florence, coloriet, sevagram, van neynsel, domus valuas, groenhuysen, pantein, pieter van foreest, welthuis, amstelring, dignis, axioncontinu, sensire, meandergroep, amarijn, saffier, kwadrantgroep, omring, cicero, humanitas, opella, viva! zorggroep, amsta, hilverzorg, avoord, topaz, zorggroep ter weel, korian, marente, activite, zuidoostzorg, zorg groep beek, miep huishoudelijke, zorgspectrum, vilente, viattence, bartholomeus gasthuis, zorgspectrum het zand, quarijn, stichting land van horne
+WLZ: wlz, gehandicaptenzorg, beperking, beperkingen, lvb, langdurige zorg, forensische zorg, jeugdwet, jeugdzorg, pluryn, middin, cosis, 's heeren loo, cello, siza, amarant, gemiva, ipse de bruggen, koninklijke visio, ambiq, timon, ons tweede thuis, triade vitree, zuidwester, stichting radar, wender, sdw zorg, oro, lunet, zozijn, omega groep, tragel, prinsenstichting, sovak, sensa zorg, zideris, aveleijn, driestroom, baalderborg, abrona, philadelphia, ribw, raphaëlstichting, raphaelstichting
+Pharma: pharma, pharmaceutical, geneesmiddel, geneesmiddelen, farma, fabrikant, manufacturing, batch release, gmp, qa, quality assurance, qualified person, qp
+Biotech: biotech, biotechnology, biologics, biologisch, cell therapy, gene therapy
+CDMO: cdmo, cmo, contract manufacturing, contract development, fill finish
+Medical Devices: medical device, medical devices, medtech, hulpmiddel, hulpmiddelen, device
+Healthcare: healthcare, health care, zorg, ziekenhuis, clinic, kliniek
+Overig: overig"""
+
 
 BADGES = (
     "Dit profiel heeft een LinkedIn Premium-abonnement.",
@@ -51,6 +62,21 @@ def clean(text: object) -> str:
 
 def tokens(text: str) -> list[str]:
     return [clean(x).lower() for x in re.split(r"[,;\n]+", text or "") if clean(x)]
+
+
+def parse_sector_rules(text: str, allowed_buckets: list[str]) -> dict[str, list[str]]:
+    allowed = {bucket.lower(): bucket for bucket in allowed_buckets}
+    rules: dict[str, list[str]] = {bucket: [] for bucket in allowed_buckets}
+    for raw_line in (text or "").splitlines():
+        line = clean(raw_line)
+        if not line or ":" not in line:
+            continue
+        bucket_raw, keywords_raw = line.split(":", 1)
+        bucket = allowed.get(clean(bucket_raw).lower())
+        if not bucket:
+            continue
+        rules[bucket].extend(tokens(keywords_raw))
+    return rules
 
 
 def is_badge(text: str) -> bool:
@@ -263,14 +289,21 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out[STANDARD_COLUMNS]
 
 
-def classify_sector(row: pd.Series, sector_buckets: list[str]) -> str:
+def classify_sector(row: pd.Series, sector_buckets: list[str], sector_rules: dict[str, list[str]] | None = None) -> str:
     if not sector_buckets:
         return clean(row.get("sector")) or "Overig"
-    blob = " | ".join(clean(row.get(c)) for c in ["huidig_bedrijf", "functietitel", "sector", "info_eerdere_rollen"]).lower()
+    blob = " | ".join(clean(row.get(c)) for c in ["huidig_bedrijf", "functietitel", "info_eerdere_rollen"]).lower()
+    original_sector = clean(row.get("sector")).lower()
+    for bucket in sector_buckets:
+        keywords = (sector_rules or {}).get(bucket, [])
+        if any(keyword and keyword in blob for keyword in keywords):
+            return bucket
     for bucket in sector_buckets:
         bucket_l = bucket.lower()
         bucket_words = [bucket_l, *bucket_l.replace("/", " ").split()]
         if any(word and word in blob for word in bucket_words):
+            return bucket
+        if original_sector == bucket_l:
             return bucket
     return "Overig" if "Overig" in sector_buckets else sector_buckets[-1]
 
@@ -396,6 +429,12 @@ def main() -> None:
             for x in re.split(r"[,;\n]+", st.text_area("Sector-buckets", "Pharma, Biotech, CDMO, Medical Devices, Healthcare, Overig"))
             if clean(x)
         ]
+        sector_rules_text = st.text_area(
+            "Sector-keywords per bucket",
+            DEFAULT_SECTOR_RULES,
+            height=260,
+            help="Format: Bucket: keyword, keyword, keyword. Alleen regels waarvan de bucket ook in Sector-buckets staat worden gebruikt.",
+        )
 
     uploaded = st.file_uploader("Upload Word, Excel of CSV", type=["docx", "xlsx", "xls", "csv"])
 
@@ -409,7 +448,8 @@ def main() -> None:
         st.stop()
 
     if sector_buckets:
-        df["sector"] = df.apply(lambda row: classify_sector(row, sector_buckets), axis=1)
+        sector_rules = parse_sector_rules(sector_rules_text, sector_buckets)
+        df["sector"] = df.apply(lambda row: classify_sector(row, sector_buckets, sector_rules), axis=1)
 
     st.subheader("1. Ingelezen profielen")
     st.write(f"{len(df)} profielen ingelezen.")
@@ -439,4 +479,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
