@@ -113,6 +113,11 @@ BADGES = (
     "Tweedegraads connectie",
     "Eerstegraads connectie",
     "Gesourced",
+    "This profile has a LinkedIn Premium subscription",
+    "Third degree connection",
+    "Second degree connection",
+    "First degree connection",
+    "Sourced",
 )
 
 STOP_PREFIXES = (
@@ -122,6 +127,11 @@ STOP_PREFIXES = (
     "Inuncontacted",
     "Opgeslagen op ",
     "door ",
+    "Change stage",
+    "Message ",
+    "More actions for ",
+    "Saved on ",
+    "by ",
 )
 
 
@@ -178,8 +188,40 @@ def is_badge(text: str) -> bool:
     return any(text.startswith(prefix) for prefix in BADGES)
 
 
+def is_sector_line(text: str) -> bool:
+    return text.startswith(("Â· ", "· "))
+
+
+def clean_sector_line(text: str) -> str:
+    return clean(re.sub(r"^(?:Â·|·)\s*", "", text))
+
+
+def is_experience_marker(text: str) -> bool:
+    return text in {"ErvaringErvaring in profiel", "ExperienceProfile experience"}
+
+
+def is_education_marker(text: str) -> bool:
+    return text in {"OpleidingOpleidingen op het profiel", "EducationProfile education"}
+
+
+def is_interest_marker(text: str) -> bool:
+    return text.startswith(
+        (
+            "LabelsLabels",
+            "Decoraties voor rij met profielinteresses",
+            "TagsCandidate tags",
+            "Profile interest row decorations",
+        )
+    )
+
+
+def is_activity_marker(text: str) -> bool:
+    return text.startswith(("Decoraties voor rij met profielactiviteit", "Profile activity row decorations"))
+
+
+
 def strip_date_suffix(line: str) -> str:
-    return clean(re.sub(r"\s*·\s*.*$", "", line))
+    return clean(re.sub(r"\s*(?:Â·|·|愧)\s*.*$", "", line))
 
 
 def split_title_company(headline: str) -> tuple[str, str]:
@@ -311,6 +353,114 @@ def parse_docx(uploaded_file) -> pd.DataFrame:
                 section = None
                 continue
             if line.startswith("Kandidaat werd opgeslagen") or line.startswith("Opgeslagen door"):
+                section = "activity"
+                continue
+            if section == "experience":
+                experience.append(line)
+            elif section == "education":
+                education.append(line)
+            elif section == "interest":
+                interest.append(line)
+            elif section == "activity":
+                activity.append(line)
+
+        title, company = split_title_company(headline)
+        current = best_current_experience(experience, title, company)
+        if current:
+            current_title, current_company = split_title_company(strip_date_suffix(current))
+            if current_company and not company:
+                company = current_company
+            if current_company and title.lower() == current_company.lower():
+                title = current_title
+
+        prior = [x for x in experience if x != current]
+        if "Premium" in " ".join(block):
+            interest.append("LinkedIn Premium")
+
+        records.append(
+            {
+                "naam": name,
+                "huidig_bedrijf": company,
+                "functietitel": title,
+                "locatie": location,
+                "sector": sector,
+                "tenure_huidige_rol_jaren": years_from_line(current),
+                "info_eerdere_rollen": " | ".join(compact_role(x) for x in prior[:3]),
+                "hoogst_afgeronde_opleiding": education_summary(education),
+                "interesse_signalen": "; ".join(dict.fromkeys([x for x in interest if x])),
+                "activiteit": " | ".join(activity[:4]),
+            }
+        )
+    return pd.DataFrame(records, columns=STANDARD_COLUMNS)
+
+
+def parse_docx(uploaded_file) -> pd.DataFrame:
+    doc = Document(uploaded_file)
+    texts = [clean(p.text) for p in doc.paragraphs]
+    texts = [t for t in texts if t]
+    exp_idxs = [i for i, t in enumerate(texts) if is_experience_marker(t)]
+
+    records = []
+    if not exp_idxs:
+        return pd.DataFrame(columns=STANDARD_COLUMNS)
+
+    headers = []
+    for exp_idx in exp_idxs:
+        if exp_idx < 3:
+            continue
+
+        scan_idx = exp_idx - 1
+        sector = ""
+        if scan_idx >= 0 and is_sector_line(texts[scan_idx]):
+            sector = clean_sector_line(texts[scan_idx])
+            scan_idx -= 1
+        if scan_idx < 2:
+            continue
+
+        location = texts[scan_idx]
+        headline = texts[scan_idx - 1]
+        name_idx = scan_idx - 2
+        while name_idx >= 0 and (is_badge(texts[name_idx]) or texts[name_idx].startswith("Select ")):
+            name_idx -= 1
+        if name_idx < 0:
+            continue
+        if texts[name_idx].endswith(" selecteren") and name_idx + 1 < len(texts):
+            name_idx += 1
+        headers.append((name_idx, texts[name_idx], headline, location, sector))
+
+    for pos, (start, name, headline, location, sector) in enumerate(headers):
+        end = headers[pos + 1][0] if pos + 1 < len(headers) else len(texts)
+        block = texts[start:end]
+        info = [x for x in block[1:] if not is_badge(x)]
+        experience: list[str] = []
+        education: list[str] = []
+        interest: list[str] = []
+        activity: list[str] = []
+        section = None
+
+        for line in info:
+            if is_sector_line(line):
+                continue
+            if section is None and line in {headline, location}:
+                continue
+            if is_experience_marker(line):
+                section = "experience"
+                continue
+            if is_education_marker(line):
+                section = "education"
+                continue
+            if is_interest_marker(line):
+                section = "interest"
+                continue
+            if is_activity_marker(line):
+                section = "activity"
+                continue
+            if line.startswith(("Alles weergeven", "Show all", "Similar skills to saved candidates")):
+                continue
+            if any(line.startswith(prefix) for prefix in STOP_PREFIXES):
+                section = None
+                continue
+            if line.startswith(("Kandidaat werd opgeslagen", "Opgeslagen door", "Candidate saved to project", "Saved by")):
                 section = "activity"
                 continue
             if section == "experience":
