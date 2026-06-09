@@ -439,8 +439,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-streamlit>=1.36
-pandas>=2.2
-python-docx>=1.1
-openpyxl>=3.1
-xlsxwriter>=3.2
+
