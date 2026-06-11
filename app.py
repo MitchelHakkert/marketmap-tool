@@ -35,7 +35,7 @@ DEFAULT_SECTOR_RULES = """GGZ: ggz, geestelijke gezondheidszorg, psychiatrie, ps
 MSZ: msz, ziekenhuis, ziekenhuizen, medisch centrum, umc, universitair medisch, kliniek, klinieken, diagnostiek, laboratorium, zbc, erasmus mc, amsterdam umc, umcg, radboudumc, lumc, olvg, zuyderland, maastricht umc, canisius, st. antonius, elisabeth-tweesteden, etz, bravis, maxima mc, máxima mc, hagaziekenhuis, gelre, alrijne, adrz, tergooi, martini, bergman, diakonessenhuis, franciscus, antoni van leeuwenhoek, jeroen bosch, viecuri, catharina, rijnstate, dijklander, slingeland, zgt, flevoziekenhuis, maasstad, laurentius ziekenhuis, curaMare, curamare, dicoon, acibadem, leiden university medical, medisch spectrum twente, amphia, saxenburgh, sjg weert, caresq, rivas zorggroep, unilabs
 VVT: vvt, ouderenzorg, thuiszorg, verpleeghuis, verpleeghuizen, woonzorg, wijkverpleging, zorgcentrum, zorgcentra, brabantzorg, careyn, laurens, cordaan, aafje, tantelouise, de zorgcirkel, beweging 3.0, zonnehuisgroep, zorgsaam, actief zorg, bloezem, lelie zorggroep, surplus, mijzo, zorggroep solis, carinova, zinn, magentazorg, florence, coloriet, sevagram, van neynsel, domus valuas, groenhuysen, pantein, pieter van foreest, welthuis, amstelring, dignis, axioncontinu, sensire, meandergroep, amarijn, saffier, kwadrantgroep, omring, cicero, humanitas, opella, viva! zorggroep, amsta, hilverzorg, avoord, topaz, zorggroep ter weel, korian, marente, activite, zuidoostzorg, zorg groep beek, miep huishoudelijke, zorgspectrum, vilente, viattence, bartholomeus gasthuis, zorgspectrum het zand, quarijn, stichting land van horne
 WLZ: wlz, gehandicaptenzorg, beperking, beperkingen, lvb, langdurige zorg, forensische zorg, jeugdwet, jeugdzorg, pluryn, middin, cosis, 's heeren loo, cello, siza, amarant, gemiva, ipse de bruggen, koninklijke visio, ambiq, timon, ons tweede thuis, triade vitree, zuidwester, stichting radar, wender, sdw zorg, oro, lunet, zozijn, omega groep, tragel, prinsenstichting, sovak, sensa zorg, zideris, aveleijn, driestroom, baalderborg, abrona, philadelphia, ribw, raphaëlstichting, raphaelstichting
-Pharma: pharma, pharmaceutical, geneesmiddel, geneesmiddelen, farma, fabrikant, manufacturing, batch release, gmp, qa, quality assurance, qualified person, qp
+Pharma: pharma, pharmaceutical, geneesmiddel, geneesmiddelen, farma, fabrikant, manufacturing, batch release, gmp, qa, quality assurance, qualified person, qp, medical affairs, medical advisor, regional medical advisor, medical science liaison, msl, medical manager
 Biotech: biotech, biotechnology, biologics, biologisch, cell therapy, gene therapy
 CDMO: cdmo, cmo, contract manufacturing, contract development, fill finish
 Medical Devices: medical device, medical devices, medtech, hulpmiddel, hulpmiddelen, device
@@ -155,6 +155,13 @@ STOP_PREFIXES = (
 
 
 def clean(text: object) -> str:
+    if text is None:
+        return ""
+    try:
+        if pd.isna(text):
+            return ""
+    except (TypeError, ValueError):
+        pass
     text = "" if text is None else str(text)
     text = text.replace("\xa0", " ").replace("Â·", "·").replace("â€“", "–")
     return " ".join(text.split()).strip()
@@ -261,6 +268,26 @@ def years_from_line(line: str) -> int | None:
     start = years[0]
     end = datetime.now().year if re.search(r"\bheden\b|\bpresent\b", line, re.I) else years[-1]
     return max(0, end - start)
+
+
+def years_from_value(value: object) -> float | None:
+    if pd.isna(value):
+        return None
+    if isinstance(value, (int, float)):
+        return max(0.0, float(value))
+    text = clean(value).lower().replace(",", ".")
+    if not text or text in {"?", "-", "nan", "none"}:
+        return None
+    month_match = re.search(r"(\d+(?:\.\d+)?)\s*(mnd|maand|maanden|month|months)", text)
+    if month_match:
+        return round(float(month_match.group(1)) / 12, 1)
+    year_match = re.search(r"(\d+(?:\.\d+)?)\s*(jaar|jaren|year|years|jr)", text)
+    if year_match:
+        return round(float(year_match.group(1)), 1)
+    number_match = re.search(r"\d+(?:\.\d+)?", text)
+    if number_match:
+        return round(float(number_match.group(0)), 1)
+    return None
 
 
 HBO_INSTITUTIONS = (
@@ -683,30 +710,95 @@ def read_table(uploaded_file) -> pd.DataFrame:
         df = pd.read_csv(uploaded_file)
         df = normalize_columns(df)
     else:
-        df = pd.read_excel(uploaded_file)
-        df = normalize_columns(df)
+        df = read_excel_profiles(uploaded_file)
     df["hoogst_afgeronde_opleiding"] = df["hoogst_afgeronde_opleiding"].apply(normalize_education_value)
     return df[STANDARD_COLUMNS]
+
+
+def read_excel_profiles(uploaded_file) -> pd.DataFrame:
+    sheets = pd.read_excel(uploaded_file, sheet_name=None)
+    frames = []
+    for sheet_name, sheet_df in sheets.items():
+        normalized = normalize_columns(sheet_df)
+        has_name = normalized["naam"].astype(str).map(clean).ne("").sum()
+        has_profile_context = (
+            normalized["huidig_bedrijf"].astype(str).map(clean).ne("")
+            | normalized["functietitel"].astype(str).map(clean).ne("")
+        ).sum()
+        if has_name and has_profile_context:
+            normalized = normalized[
+                normalized["naam"].astype(str).map(clean).ne("")
+                & (
+                    normalized["huidig_bedrijf"].astype(str).map(clean).ne("")
+                    | normalized["functietitel"].astype(str).map(clean).ne("")
+                )
+            ].copy()
+            normalized["activiteit"] = normalized["activiteit"].where(
+                normalized["activiteit"].astype(str).map(clean).ne(""),
+                f"Bron tab: {sheet_name}",
+            )
+            frames.append(normalized)
+    if frames:
+        return pd.concat(frames, ignore_index=True)[STANDARD_COLUMNS]
+    first_sheet = next(iter(sheets.values()), pd.DataFrame())
+    return normalize_columns(first_sheet)
 
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     aliases = {
         "naam": ["naam", "name", "candidate", "kandidaat"],
-        "huidig_bedrijf": ["huidig bedrijf", "company", "bedrijf", "current company", "organisatie"],
-        "functietitel": ["functietitel", "title", "functie", "job title", "headline"],
+        "huidig_bedrijf": [
+            "huidig bedrijf",
+            "huidige werkgever",
+            "company",
+            "bedrijf",
+            "werkgever",
+            "current company",
+            "current employer",
+            "organisatie",
+        ],
+        "functietitel": ["functietitel", "titel", "title", "functie", "job title", "headline"],
         "locatie": ["locatie", "location", "plaats"],
-        "sector": ["sector", "industry", "branche"],
-        "tenure_huidige_rol_jaren": ["tenure huidige rol (jaren)", "tenure", "tenure_huidige_rol_jaren"],
-        "info_eerdere_rollen": ["info eerdere rollen", "previous roles", "ervaring"],
+        "sector": ["sector", "industry", "branche", "farma/biotech"],
+        "tenure_huidige_rol_jaren": [
+            "tenure huidige rol (jaren)",
+            "tenure",
+            "tenure_huidige_rol_jaren",
+            "jaren in huidige rol",
+            "years in current role",
+            "current role tenure",
+        ],
+        "info_eerdere_rollen": ["info eerdere rollen", "previous roles", "vorige werkgever", "ervaring", "previous employer"],
         "hoogst_afgeronde_opleiding": ["hoogst afgeronde opleiding", "education", "opleiding"],
-        "interesse_signalen": ["interesse signalen", "interest", "signals"],
-        "activiteit": ["activiteit", "activity"],
+        "interesse_signalen": [
+            "interesse signalen",
+            "interest",
+            "signals",
+            "therapeutic area",
+            "therapeutic areas",
+            "open voor beweging?",
+            "kol-netwerk sterkte",
+        ],
+        "activiteit": ["activiteit", "activity", "linkedin"],
     }
     by_lower = {clean(c).lower(): c for c in df.columns}
     out = pd.DataFrame()
     for target, names in aliases.items():
         source = next((by_lower[n] for n in names if n in by_lower), None)
         out[target] = df[source] if source else ""
+    if "therapeutic area" in by_lower:
+        ta = df[by_lower["therapeutic area"]].fillna("").astype(str).map(clean)
+        out["interesse_signalen"] = [
+            "; ".join(x for x in [clean(existing), f"Therapeutic area: {area}" if area and area != "?" else ""] if x)
+            for existing, area in zip(out["interesse_signalen"], ta)
+        ]
+    if "vorige werkgever" in by_lower:
+        previous = df[by_lower["vorige werkgever"]].fillna("").astype(str).map(clean)
+        out["info_eerdere_rollen"] = [
+            f"Vorige werkgever: {prev}" if prev and prev != "?" and not clean(existing) else clean(existing)
+            for existing, prev in zip(out["info_eerdere_rollen"], previous)
+        ]
+    out["tenure_huidige_rol_jaren"] = out["tenure_huidige_rol_jaren"].apply(years_from_value)
     return out[STANDARD_COLUMNS]
 
 
@@ -721,8 +813,7 @@ def classify_sector(row: pd.Series, sector_buckets: list[str], sector_rules: dic
             return bucket
     for bucket in sector_buckets:
         bucket_l = bucket.lower()
-        bucket_words = [bucket_l, *bucket_l.replace("/", " ").split()]
-        if any(word and word in blob for word in bucket_words):
+        if bucket_l and bucket_l in blob:
             return bucket
         if original_sector == bucket_l:
             return bucket
