@@ -884,18 +884,20 @@ def make_excel(df: pd.DataFrame) -> bytes:
 
         summary.write_row(3, 0, ["Metriek", "Waarde", "Percentage", "Opmerking"], header_fmt_2)
         kpis = [
-            ("Profielen", total_formula, '=IF($B$5=0,"",1)', "Telt namen op tab Profielen"),
-            ("Met huidig bedrijf", f'=COUNTIF(Profielen!$B$2:$B${max_row},"<>")', '=IF($B$5=0,"",$B5/$B$5)', ""),
-            ("Met tenure", f'=COUNT(Profielen!$F$2:$F${max_row})', '=IF($B$5=0,"",$B6/$B$5)', ""),
-            ("Gemiddelde tenure", f'=IFERROR(AVERAGE(Profielen!$F$2:$F${max_row}),"")', "", "In jaren"),
-            ("Met eerdere rollen", f'=COUNTIF(Profielen!$G$2:$G${max_row},"<>")', '=IF($B$5=0,"",$B8/$B$5)', ""),
-            ("Met opleiding", f'=COUNTIF(Profielen!$H$2:$H${max_row},"<>")', '=IF($B$5=0,"",$B9/$B$5)', ""),
-            ("Met activiteit", f'=COUNTIF(Profielen!$J$2:$J${max_row},"<>")', '=IF($B$5=0,"",$B10/$B$5)', ""),
+            ("Profielen", total_formula, True, "Telt namen op tab Profielen"),
+            ("Met huidig bedrijf", f'=COUNTIF(Profielen!$B$2:$B${max_row},"<>")', True, ""),
+            ("Met tenure", f'=COUNT(Profielen!$F$2:$F${max_row})', True, ""),
+            ("Gemiddelde tenure", f'=IFERROR(AVERAGE(Profielen!$F$2:$F${max_row}),"")', False, "In jaren"),
+            ("Met eerdere rollen", f'=COUNTIF(Profielen!$G$2:$G${max_row},"<>")', True, ""),
+            ("Met opleiding", f'=COUNTIFS(Profielen!$H$2:$H${max_row},"<>",Profielen!$H$2:$H${max_row},"<>Overig")', True, ""),
+            ("Met activiteit", f'=COUNTIF(Profielen!$J$2:$J${max_row},"<>")', True, ""),
         ]
-        for offset, (label, value_formula, pct_formula, note) in enumerate(kpis, start=4):
+        for offset, (label, value_formula, show_pct, note) in enumerate(kpis, start=4):
+            excel_row = offset + 1
             summary.write(offset, 0, label)
             summary.write_formula(offset, 1, value_formula, num_fmt if label == "Gemiddelde tenure" else None)
-            if pct_formula:
+            if show_pct:
+                pct_formula = '=IF($B$5=0,"",1)' if label == "Profielen" else f'=IF($B$5=0,"",$B{excel_row}/$B$5)'
                 summary.write_formula(offset, 2, pct_formula, pct_fmt)
             summary.write(offset, 3, note)
 
