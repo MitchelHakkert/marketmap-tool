@@ -244,31 +244,88 @@ def years_from_line(line: str) -> int | None:
     return max(0, end - start)
 
 
+HBO_INSTITUTIONS = (
+    "hogeschool",
+    "university of applied sciences",
+    "han ",
+    "hanze",
+    "fontys",
+    "avans",
+    "saxion",
+    "inholland",
+    "windesheim",
+    "nhl stenden",
+    "stenden",
+    "hva",
+    "hu university",
+    "hogeschool utrecht",
+    "hogeschool rotterdam",
+    "rotterdam university of applied",
+    "the hague university of applied",
+    "amsterdam university of applied",
+    "zuyd",
+    "hz university",
+    "has green academy",
+    "aeres",
+    "breda university of applied",
+    "nhtv",
+)
+
+WO_INSTITUTIONS = (
+    "universiteit",
+    "university",
+    "erasmus",
+    "nyenrode",
+    "tilburg university",
+    "utrecht university",
+    "university of amsterdam",
+    "vrije universiteit",
+    "vu amsterdam",
+    "leiden university",
+    "rijksuniversiteit groningen",
+    "university of groningen",
+    "radboud",
+    "maastricht university",
+    "university of twente",
+    "delft university",
+    "tu delft",
+    "wageningen university",
+    "eindhoven university",
+    "open universiteit",
+)
+
+
 def infer_education_level(line: str) -> str:
-    t = line.lower()
-    patterns = [
-        ("PhD/Doctorate", r"\b(phd|doctor|doctorate|promotie)\b"),
-        ("MBA", r"\bmba\b"),
-        ("Master", r"\b(master|msc|m\.sc|ma|m\.a\.|m[a-z]*\.)\b"),
-        ("Bachelor/HBO", r"\b(bachelor|bsc|b\.sc|hbo|hogeschool|bba|bachelorgraad|post bachelor|post-hbo)\b"),
-        ("WO", r"\b(university|universiteit|wo)\b"),
-        ("MBO", r"\bmbo\b"),
-    ]
-    for label, pattern in patterns:
-        if re.search(pattern, t):
-            return label
+    t = f" {clean(line).lower()} "
+    is_hbo_school = any(school in t for school in HBO_INSTITUTIONS)
+    is_wo_school = any(school in t for school in WO_INSTITUTIONS) and not is_hbo_school
+
+    if re.search(r"\b(phd|ph\.d|doctorate|postdoc|post-doc|postdoctoral|promotie|gepromoveerd)\b", t):
+        return "PhD/PostDoc"
+    if re.search(r"\b(mbo|middelbaar beroepsonderwijs)\b", t):
+        return "MBO"
+    if re.search(r"\b(master|msc|m\.sc|ms|ma|m\.a\.|llm|m\.?b\.?a\.?|drs)\b", t):
+        return "WO master"
+    if re.search(r"\b(bsc|b\.sc|ba|b\.a\.)\b", t):
+        return "WO Bachelor" if is_wo_school else "HBO"
+    if re.search(r"\b(bachelor|bachelorgraad|bba|post bachelor|post-hbo|associate degree|ad)\b", t):
+        return "WO Bachelor" if is_wo_school and not is_hbo_school else "HBO"
+    if is_hbo_school or re.search(r"\b(hbo|heao|hts|hbs)\b", t):
+        return "HBO"
+    if is_wo_school or re.search(r"\b(wo|doctoraal)\b", t):
+        return "WO master"
     return ""
 
 
 def education_summary(lines: list[str]) -> str:
     if not lines:
-        return ""
-    rank = {"PhD/Doctorate": 6, "MBA": 5, "Master": 4, "WO": 3, "Bachelor/HBO": 2, "MBO": 1}
-    best = max(lines, key=lambda x: rank.get(infer_education_level(x), 0))
-    level = infer_education_level(best)
-    detail = best.split(",", 1)[1] if "," in best else best
-    detail = re.sub(r"\s*·\s*[\d–\- heden]+.*$", "", detail).strip(" -")
-    return f"{level} - {clean(detail)}" if level and clean(detail) else level or clean(detail)
+        return "Onbekend"
+    rank = {"PhD/PostDoc": 5, "WO master": 4, "WO Bachelor": 3, "HBO": 2, "MBO": 1}
+    levels = [infer_education_level(line) for line in lines]
+    known_levels = [level for level in levels if level]
+    if not known_levels:
+        return "Onbekend"
+    return max(known_levels, key=lambda level: rank.get(level, 0))
 
 
 def compact_role(line: str) -> str:
