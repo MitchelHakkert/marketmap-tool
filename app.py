@@ -248,6 +248,8 @@ HBO_INSTITUTIONS = (
     "hogeschool",
     "university of applied sciences",
     "han ",
+    "hogeschool van arnhem",
+    "arnhem en nijmegen",
     "hanze",
     "fontys",
     "avans",
@@ -269,6 +271,22 @@ HBO_INSTITUTIONS = (
     "aeres",
     "breda university of applied",
     "nhtv",
+    "artez",
+    "codarts",
+    "hotelschool the hague",
+    "tio university",
+    "wittenborg",
+    "viaa",
+    "che ",
+    "christelijke hogeschool ede",
+    "ipabo",
+    "marnix academie",
+    "driestar",
+    "iselinge",
+    "kempel",
+    "gerrit rietveld academie",
+    "design academy eindhoven",
+    "amsterdamse hogeschool voor de kunsten",
 )
 
 WO_INSTITUTIONS = (
@@ -292,7 +310,21 @@ WO_INSTITUTIONS = (
     "wageningen university",
     "eindhoven university",
     "open universiteit",
+    "rijksuniversiteit",
+    "universiteit leiden",
+    "universiteit utrecht",
+    "universiteit van amsterdam",
+    "universiteit twente",
+    "technische universiteit",
+    "tu eindhoven",
+    "tilburg universiteit",
+    "maastricht universiteit",
+    "radboud universiteit",
+    "vrije universiteit amsterdam",
+    "wageningen universiteit",
 )
+
+EDUCATION_ORDER = ["PhD/PostDoc", "WO master", "WO Bachelor", "HBO", "MBO", "Overig"]
 
 
 def infer_education_level(line: str) -> str:
@@ -304,14 +336,14 @@ def infer_education_level(line: str) -> str:
         return "PhD/PostDoc"
     if re.search(r"\b(mbo|middelbaar beroepsonderwijs)\b", t):
         return "MBO"
+    if is_hbo_school or re.search(r"\b(hbo|heao|hts|hbs)\b", t):
+        return "HBO"
     if re.search(r"\b(master|msc|m\.sc|ms|ma|m\.a\.|llm|m\.?b\.?a\.?|drs)\b", t):
         return "WO master"
     if re.search(r"\b(bsc|b\.sc|ba|b\.a\.)\b", t):
         return "WO Bachelor" if is_wo_school else "HBO"
     if re.search(r"\b(bachelor|bachelorgraad|bba|post bachelor|post-hbo|associate degree|ad)\b", t):
         return "WO Bachelor" if is_wo_school and not is_hbo_school else "HBO"
-    if is_hbo_school or re.search(r"\b(hbo|heao|hts|hbs)\b", t):
-        return "HBO"
     if is_wo_school or re.search(r"\b(wo|doctoraal)\b", t):
         return "WO master"
     return ""
@@ -319,13 +351,23 @@ def infer_education_level(line: str) -> str:
 
 def education_summary(lines: list[str]) -> str:
     if not lines:
-        return "Onbekend"
+        return "Overig"
     rank = {"PhD/PostDoc": 5, "WO master": 4, "WO Bachelor": 3, "HBO": 2, "MBO": 1}
     levels = [infer_education_level(line) for line in lines]
     known_levels = [level for level in levels if level]
     if not known_levels:
-        return "Onbekend"
+        return "Overig"
     return max(known_levels, key=lambda level: rank.get(level, 0))
+
+
+def normalize_education_value(value: object) -> str:
+    text = clean(value)
+    if not text or text.lower() in {"onbekend", "unknown", "overig", "other"}:
+        return "Overig"
+    for level in EDUCATION_ORDER:
+        if text.lower() == level.lower():
+            return level
+    return infer_education_level(text) or "Overig"
 
 
 def compact_role(line: str) -> str:
@@ -353,7 +395,7 @@ def best_current_experience(experience: list[str], title: str, company: str) -> 
     return search[0] if search else ""
 
 
-def parse_docx(uploaded_file) -> pd.DataFrame:
+def _legacy_parse_docx_unused(uploaded_file) -> pd.DataFrame:
     doc = Document(uploaded_file)
     texts = [clean(p.text) for p in doc.paragraphs]
     texts = [t for t in texts if t]
@@ -562,12 +604,15 @@ def parse_docx(uploaded_file) -> pd.DataFrame:
 def read_table(uploaded_file) -> pd.DataFrame:
     name = uploaded_file.name.lower()
     if name.endswith(".docx"):
-        return parse_docx(uploaded_file)
-    if name.endswith(".csv"):
+        df = parse_docx(uploaded_file)
+    elif name.endswith(".csv"):
         df = pd.read_csv(uploaded_file)
+        df = normalize_columns(df)
     else:
         df = pd.read_excel(uploaded_file)
-    return normalize_columns(df)
+        df = normalize_columns(df)
+    df["hoogst_afgeronde_opleiding"] = df["hoogst_afgeronde_opleiding"].apply(normalize_education_value)
+    return df[STANDARD_COLUMNS]
 
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -670,14 +715,7 @@ def make_excel(df: pd.DataFrame) -> bytes:
     top_companies = excel_df["huidig_bedrijf"].replace("", "Onbekend").fillna("Onbekend").value_counts().head(20).index.tolist()
     top_sectors = excel_df["sector"].replace("", "Onbekend").fillna("Onbekend").value_counts().head(20).index.tolist()
     top_locations = excel_df["locatie"].replace("", "Onbekend").fillna("Onbekend").value_counts().head(20).index.tolist()
-    top_education = (
-        excel_df["hoogst_afgeronde_opleiding"]
-        .replace("", "Onbekend")
-        .fillna("Onbekend")
-        .value_counts()
-        .head(20)
-        .index.tolist()
-    )
+    top_education = EDUCATION_ORDER
     tenure_buckets = ["<1 jaar", "1-2 jaar", "3-5 jaar", "6-10 jaar", "10+ jaar", "Onbekend"]
 
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
