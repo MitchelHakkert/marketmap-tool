@@ -3,11 +3,16 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime
 from io import BytesIO
+from pathlib import Path
 import re
 from typing import Iterable
 
 from docx import Document
 import pandas as pd
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas
 import streamlit as st
 
 
@@ -23,6 +28,8 @@ STANDARD_COLUMNS = [
     "interesse_signalen",
     "activiteit",
 ]
+
+HEADER_IMAGE_PATH = Path(__file__).with_name("assets") / "Derks-LinkedIn-achtergrond-1584x396.jpg"
 
 DEFAULT_SECTOR_RULES = """GGZ: ggz, geestelijke gezondheidszorg, psychiatrie, psychiatrisch, verslavingszorg, autisme, mental care, parnassia, arkin, yulius, pro persona, altrecht, lentis, mondriaan, fivoor, dimence, ggze, ggz breburg, ggz centraal, tactus, ggz drenthe, ggz friesland, reinier van arkel, emergis, karakter, vnn, novadic, eleos, lievegoed, de viersprong, yes we can, hsk groep, mentaal beter
 MSZ: msz, ziekenhuis, ziekenhuizen, medisch centrum, umc, universitair medisch, kliniek, klinieken, diagnostiek, laboratorium, zbc, erasmus mc, amsterdam umc, umcg, radboudumc, lumc, olvg, zuyderland, maastricht umc, canisius, st. antonius, elisabeth-tweesteden, etz, bravis, maxima mc, máxima mc, hagaziekenhuis, gelre, alrijne, adrz, tergooi, martini, bergman, diakonessenhuis, franciscus, antoni van leeuwenhoek, jeroen bosch, viecuri, catharina, rijnstate, dijklander, slingeland, zgt, flevoziekenhuis, maasstad, laurentius ziekenhuis, curaMare, curamare, dicoon, acibadem, leiden university medical, medisch spectrum twente, amphia, saxenburgh, sjg weert, caresq, rivas zorggroep, unilabs
@@ -817,6 +824,147 @@ def safe_excel_filename(label: str) -> str:
     return f"Market Map {label or 'Profielen'}.xlsx"
 
 
+def safe_pdf_filename(label: str) -> str:
+    label = clean(label) or "Profielen"
+    label = re.sub(r'[<>:"/\\|?*]+', "", label)
+    label = re.sub(r"\s+", " ", label).strip(" ._-")
+    return f"Market Map {label or 'Profielen'} - Onepager.pdf"
+
+
+def make_onepager_pdf(df: pd.DataFrame, audience_name: str = "") -> bytes:
+    output = BytesIO()
+    page_width, page_height = landscape(A4)
+    pdf = canvas.Canvas(output, pagesize=landscape(A4))
+
+    dark_blue = colors.HexColor("#073763")
+    mid_blue = colors.HexColor("#155E75")
+    light_blue = colors.HexColor("#EAF4FA")
+    green = colors.HexColor("#92D050")
+    grey = colors.HexColor("#4B5563")
+    border = colors.HexColor("#D9E2EA")
+
+    margin = 28
+    header_height = 142
+    if HEADER_IMAGE_PATH.exists():
+        image = ImageReader(str(HEADER_IMAGE_PATH))
+        pdf.drawImage(image, 0, page_height - header_height, width=page_width, height=header_height, preserveAspectRatio=True, anchor="n")
+    else:
+        pdf.setFillColor(dark_blue)
+        pdf.rect(0, page_height - header_height, page_width, header_height, fill=1, stroke=0)
+        pdf.setFillColor(colors.white)
+        pdf.setFont("Helvetica-Bold", 24)
+        pdf.drawCentredString(page_width / 2, page_height - 75, "Derks & Derks")
+    pdf.setFillColor(green)
+    pdf.rect(0, page_height - header_height - 10, page_width, 10, fill=1, stroke=0)
+
+    title_y = page_height - header_height - 42
+    title = f"Market Map {clean(audience_name) or 'Profielen'}"
+    pdf.setFillColor(dark_blue)
+    pdf.setFont("Helvetica-Bold", 22)
+    pdf.drawString(margin, title_y, title)
+    pdf.setFillColor(grey)
+    pdf.setFont("Helvetica", 9)
+    pdf.drawString(margin, title_y - 15, "Kernbeeld van de profielen in deze mapping")
+
+    total = max(len(df), 1)
+    tenure = pd.to_numeric(df["tenure_huidige_rol_jaren"], errors="coerce")
+    avg_tenure = tenure.mean()
+    top_company = df["huidig_bedrijf"].replace("", "Onbekend").fillna("Onbekend").value_counts().index[0] if len(df) else "-"
+    top_sector = df["sector"].replace("", "Overig").fillna("Overig").value_counts().index[0] if len(df) else "-"
+
+    def draw_card(x: float, y: float, w: float, h: float, label: str, value: str) -> None:
+        pdf.setFillColor(mid_blue)
+        pdf.roundRect(x, y + h - 22, w, 22, 3, fill=1, stroke=0)
+        pdf.setFillColor(colors.white)
+        pdf.setFont("Helvetica-Bold", 8)
+        pdf.drawCentredString(x + w / 2, y + h - 15, label)
+        pdf.setFillColor(light_blue)
+        pdf.roundRect(x, y, w, h - 22, 3, fill=1, stroke=1)
+        pdf.setStrokeColor(border)
+        pdf.setFillColor(dark_blue)
+        pdf.setFont("Helvetica-Bold", 15)
+        clipped = value if len(value) <= 22 else value[:21] + "..."
+        pdf.drawCentredString(x + w / 2, y + 18, clipped)
+
+    card_y = title_y - 72
+    card_w = 120
+    gap = 14
+    draw_card(margin, card_y, card_w, 56, "Profielen", str(len(df)))
+    draw_card(margin + (card_w + gap), card_y, card_w, 56, "Gem. tenure", "" if pd.isna(avg_tenure) else f"{avg_tenure:.1f} jaar")
+    draw_card(margin + 2 * (card_w + gap), card_y, card_w, 56, "Topbedrijf", str(top_company))
+    draw_card(margin + 3 * (card_w + gap), card_y, card_w, 56, "Topsector", str(top_sector))
+
+    def draw_table(x: float, y: float, title_text: str, rows: list[tuple[str, int, float]], col_widths: tuple[int, int, int]) -> None:
+        row_h = 17
+        table_w = sum(col_widths)
+        pdf.setFillColor(dark_blue)
+        pdf.rect(x, y, table_w, row_h, fill=1, stroke=0)
+        pdf.setFillColor(colors.white)
+        pdf.setFont("Helvetica-Bold", 9)
+        pdf.drawString(x + 5, y + 5, title_text)
+        header_y = y - row_h
+        pdf.setFillColor(colors.HexColor("#DDEBF7"))
+        pdf.rect(x, header_y, table_w, row_h, fill=1, stroke=1)
+        pdf.setFillColor(colors.black)
+        pdf.setFont("Helvetica-Bold", 7)
+        headers = ["categorie", "aantal", "%"]
+        cx = x
+        for header, width in zip(headers, col_widths):
+            pdf.drawString(cx + 4, header_y + 5, header)
+            cx += width
+        pdf.setFont("Helvetica", 7)
+        for idx, (label, count, pct) in enumerate(rows):
+            row_y = header_y - row_h * (idx + 1)
+            pdf.setFillColor(colors.white)
+            pdf.rect(x, row_y, table_w, row_h, fill=1, stroke=1)
+            pdf.setFillColor(colors.black)
+            clipped = str(label) if len(str(label)) <= 28 else str(label)[:27] + "..."
+            pdf.drawString(x + 4, row_y + 5, clipped)
+            pdf.drawRightString(x + col_widths[0] + col_widths[1] - 5, row_y + 5, str(count))
+            pdf.drawRightString(x + table_w - 5, row_y + 5, f"{pct:.1%}")
+
+    edu_counts = df["hoogst_afgeronde_opleiding"].replace("", "Overig").fillna("Overig").value_counts()
+    education_rows = [(label, int(edu_counts.get(label, 0)), int(edu_counts.get(label, 0)) / total) for label in EDUCATION_ORDER]
+    company_counts = df["huidig_bedrijf"].replace("", "Onbekend").fillna("Onbekend").value_counts().head(5)
+    company_rows = [(label, int(count), int(count) / total) for label, count in company_counts.items()]
+    sector_counts = df["sector"].replace("", "Overig").fillna("Overig").value_counts().head(5)
+    sector_rows = [(label, int(count), int(count) / total) for label, count in sector_counts.items()]
+    tenure_rows = [
+        ("<1 jaar", int(((tenure >= 0) & (tenure < 1)).sum()), int(((tenure >= 0) & (tenure < 1)).sum()) / total),
+        ("1-2 jaar", int(((tenure >= 1) & (tenure <= 2)).sum()), int(((tenure >= 1) & (tenure <= 2)).sum()) / total),
+        ("3-5 jaar", int(((tenure >= 3) & (tenure <= 5)).sum()), int(((tenure >= 3) & (tenure <= 5)).sum()) / total),
+        ("6-10 jaar", int(((tenure >= 6) & (tenure <= 10)).sum()), int(((tenure >= 6) & (tenure <= 10)).sum()) / total),
+        ("10+ jaar", int((tenure > 10).sum()), int((tenure > 10).sum()) / total),
+        ("Onbekend", int(tenure.isna().sum()), int(tenure.isna().sum()) / total),
+    ]
+
+    table_y = card_y - 36
+    draw_table(margin, table_y, "Opleiding", education_rows, (112, 36, 42))
+    draw_table(margin + 220, table_y, "Top bedrijven", company_rows, (126, 36, 42))
+    draw_table(margin, table_y - 160, "Tenure", tenure_rows, (112, 36, 42))
+    draw_table(margin + 220, table_y - 160, "Top sectoren", sector_rows, (126, 36, 42))
+
+    note_x = margin + 460
+    note_y = table_y
+    note_w = page_width - note_x - margin
+    note_h = 310
+    pdf.setFillColor(dark_blue)
+    pdf.rect(note_x, note_y, note_w, 18, fill=1, stroke=0)
+    pdf.setFillColor(colors.white)
+    pdf.setFont("Helvetica-Bold", 9)
+    pdf.drawString(note_x + 5, note_y + 5, "Duiding / klantnotitie")
+    pdf.setFillColor(colors.HexColor("#F7FBF2"))
+    pdf.setStrokeColor(green)
+    pdf.rect(note_x, note_y - note_h, note_w, note_h, fill=1, stroke=1)
+    pdf.setFillColor(grey)
+    pdf.setFont("Helvetica", 8)
+    pdf.drawString(note_x + 9, note_y - 18, "Vul hier zelf de belangrijkste interpretatie, nuance of klantboodschap in.")
+
+    pdf.showPage()
+    pdf.save()
+    return output.getvalue()
+
+
 def flag_outliers(df: pd.DataFrame, include_terms: list[str], exclude_terms: list[str]) -> pd.DataFrame:
     learned_terms = learned_relevance_terms(df)
     rows = []
@@ -887,7 +1035,7 @@ def summary_frames(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     return frames
 
 
-def make_excel(df: pd.DataFrame) -> bytes:
+def make_excel(df: pd.DataFrame, audience_name: str = "") -> bytes:
     output = BytesIO()
     excel_df = df[STANDARD_COLUMNS].copy().where(pd.notna(df[STANDARD_COLUMNS]), "")
     max_row = 2000
@@ -993,6 +1141,112 @@ def make_excel(df: pd.DataFrame) -> bytes:
         summary.set_column(0, 0, 34)
         summary.set_column(1, 2, 14)
         summary.set_column(3, 3, 48)
+
+        onepager = workbook.add_worksheet("One-pager")
+        onepager.hide_gridlines(2)
+        onepager.set_landscape()
+        onepager.set_paper(9)
+        onepager.fit_to_pages(1, 1)
+        onepager.set_margins(left=0.25, right=0.25, top=0.25, bottom=0.25)
+        for col in range(10):
+            onepager.set_column(col, col, 13)
+        for row_idx in range(38):
+            onepager.set_row(row_idx, 24)
+
+        dark_blue = "#073763"
+        mid_blue = "#155E75"
+        light_blue = "#EAF4FA"
+        green = "#92D050"
+        text_dark = "#1F2937"
+
+        one_title_fmt = workbook.add_format(
+            {"bold": True, "font_size": 20, "font_color": dark_blue, "valign": "vcenter"}
+        )
+        one_subtitle_fmt = workbook.add_format({"font_size": 10, "font_color": "#4B5563"})
+        card_label_fmt = workbook.add_format(
+            {"bold": True, "font_color": "white", "bg_color": mid_blue, "align": "center", "valign": "vcenter"}
+        )
+        card_value_fmt = workbook.add_format(
+            {"bold": True, "font_size": 18, "font_color": dark_blue, "bg_color": light_blue, "align": "center", "valign": "vcenter", "border": 1, "border_color": "#B7C9D6"}
+        )
+        section_fmt = workbook.add_format(
+            {"bold": True, "font_color": "white", "bg_color": dark_blue, "align": "left", "valign": "vcenter"}
+        )
+        table_header_fmt = workbook.add_format(
+            {"bold": True, "font_color": text_dark, "bg_color": "#DDEBF7", "border": 1}
+        )
+        table_cell_fmt = workbook.add_format({"border": 1, "border_color": "#D9E2EA"})
+        table_pct_fmt = workbook.add_format({"num_format": "0.0%", "border": 1, "border_color": "#D9E2EA"})
+        note_fmt = workbook.add_format(
+            {"text_wrap": True, "valign": "top", "border": 2, "border_color": green, "bg_color": "#F7FBF2", "font_color": text_dark}
+        )
+        green_bar_fmt = workbook.add_format({"bg_color": green})
+
+        if HEADER_IMAGE_PATH.exists():
+            onepager.insert_image("A1", str(HEADER_IMAGE_PATH), {"x_scale": 0.475, "y_scale": 0.475})
+            onepager.merge_range("A10:J10", "", green_bar_fmt)
+            content_start = 11
+        else:
+            onepager.merge_range("A1:J8", "Derks & Derks", workbook.add_format({"bold": True, "font_color": "white", "bg_color": dark_blue, "font_size": 22, "align": "center", "valign": "vcenter"}))
+            onepager.merge_range("A9:J9", "", green_bar_fmt)
+            content_start = 10
+
+        page_title = f"Market Map {clean(audience_name) or 'Profielen'}"
+        onepager.merge_range(content_start, 0, content_start, 6, page_title, one_title_fmt)
+        onepager.merge_range(content_start + 1, 0, content_start + 1, 6, "Kernbeeld van de profielen in deze mapping", one_subtitle_fmt)
+
+        table_start = content_start + 8
+        total_expr = total_formula.lstrip("=")
+        company_first_row = table_start + 3
+        company_last_row = company_first_row + max(0, len(top_companies[:5]) - 1)
+        sector_first_row = table_start + 12
+        sector_last_row = sector_first_row + max(0, len(top_sectors[:5]) - 1)
+        cards = [
+            ("Profielen", total_formula),
+            ("Gem. tenure", f'=IFERROR(AVERAGE(Profielen!$F$2:$F${max_row}),"")'),
+            ("Topbedrijf", f'=IFERROR(INDEX($D${company_first_row}:$D${company_last_row},MATCH(MAX($E${company_first_row}:$E${company_last_row}),$E${company_first_row}:$E${company_last_row},0)),"")'),
+            ("Topsector", f'=IFERROR(INDEX($D${sector_first_row}:$D${sector_last_row},MATCH(MAX($E${sector_first_row}:$E${sector_last_row}),$E${sector_first_row}:$E${sector_last_row},0)),"")'),
+        ]
+        card_cols = [0, 2, 4, 6]
+        for (label, formula), col in zip(cards, card_cols):
+            onepager.merge_range(content_start + 3, col, content_start + 3, col + 1, label, card_label_fmt)
+            onepager.merge_range(content_start + 4, col, content_start + 5, col + 1, "", card_value_fmt)
+            onepager.write_formula(content_start + 4, col, formula, card_value_fmt)
+
+        onepager.merge_range(table_start, 0, table_start, 2, "Opleiding", section_fmt)
+        onepager.write_row(table_start + 1, 0, ["categorie", "aantal", "%"], table_header_fmt)
+        for i, label in enumerate(EDUCATION_ORDER, start=table_start + 2):
+            onepager.write(i, 0, label, table_cell_fmt)
+            safe_label = str(label).replace('"', '""')
+            onepager.write_formula(i, 1, f'=COUNTIF(Profielen!$H$2:$H${max_row},"{safe_label}")', table_cell_fmt)
+            onepager.write_formula(i, 2, f'=IF({total_expr}=0,"",$B{i + 1}/({total_expr}))', table_pct_fmt)
+
+        onepager.merge_range(table_start, 3, table_start, 5, "Top bedrijven", section_fmt)
+        onepager.write_row(table_start + 1, 3, ["bedrijf", "aantal", "%"], table_header_fmt)
+        for i, label in enumerate(top_companies[:5], start=table_start + 2):
+            onepager.write(i, 3, label, table_cell_fmt)
+            safe_label = str(label).replace('"', '""')
+            onepager.write_formula(i, 4, f'=COUNTIF(Profielen!$B$2:$B${max_row},"{safe_label}")', table_cell_fmt)
+            onepager.write_formula(i, 5, f'=IF({total_expr}=0,"",$E{i + 1}/({total_expr}))', table_pct_fmt)
+
+        onepager.merge_range(table_start + 9, 0, table_start + 9, 2, "Tenure", section_fmt)
+        onepager.write_row(table_start + 10, 0, ["categorie", "aantal", "%"], table_header_fmt)
+        for i, label in enumerate(tenure_buckets, start=table_start + 11):
+            onepager.write(i, 0, label, table_cell_fmt)
+            formula = tenure_formulas[i - (table_start + 11)]
+            onepager.write_formula(i, 1, formula, table_cell_fmt)
+            onepager.write_formula(i, 2, f'=IF({total_expr}=0,"",$B{i + 1}/({total_expr}))', table_pct_fmt)
+
+        onepager.merge_range(table_start + 9, 3, table_start + 9, 5, "Top sectoren", section_fmt)
+        onepager.write_row(table_start + 10, 3, ["sector", "aantal", "%"], table_header_fmt)
+        for i, label in enumerate(top_sectors[:5], start=table_start + 11):
+            onepager.write(i, 3, label, table_cell_fmt)
+            safe_label = str(label).replace('"', '""')
+            onepager.write_formula(i, 4, f'=COUNTIF(Profielen!$E$2:$E${max_row},"{safe_label}")', table_cell_fmt)
+            onepager.write_formula(i, 5, f'=IF({total_expr}=0,"",$E{i + 1}/({total_expr}))', table_pct_fmt)
+
+        onepager.merge_range(table_start, 7, table_start, 9, "Duiding / klantnotitie", section_fmt)
+        onepager.merge_range(table_start + 1, 7, table_start + 17, 9, "Vul hier zelf de belangrijkste interpretatie, nuance of klantboodschap in.", note_fmt)
     return output.getvalue()
 
 
@@ -1003,12 +1257,7 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Instellingen")
-        sector_preset = st.selectbox(
-            "Sectorindeling",
-            ["Automatisch", "Zorg", "Pharma / biotech"],
-            index=0,
-            help="Automatisch kiest zelf tussen zorg-buckets en pharma/biotech-buckets. De onderliggende keywordregels zitten verborgen in de app.",
-        )
+        sector_preset = "Automatisch"
         extra_exclude_terms = tokens(
             st.text_area(
                 "Extra twijfel-/uitsluitingswoorden",
@@ -1089,13 +1338,24 @@ def main() -> None:
     st.subheader("3. Export")
     suggested_audience = guess_audience_name(final_df)
     audience_name = st.text_input("Naam doelgroep voor bestandsnaam", suggested_audience)
-    excel = make_excel(final_df)
-    st.download_button(
-        "Download market mapping Excel",
-        data=excel,
-        file_name=safe_excel_filename(audience_name),
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+    st.caption("De download bevat tab 1 Profielen, tab 2 Samenvatting en tab 3 One-pager.")
+    excel = make_excel(final_df, audience_name)
+    pdf = make_onepager_pdf(final_df, audience_name)
+    col_excel, col_pdf = st.columns(2)
+    with col_excel:
+        st.download_button(
+            "Download market mapping Excel",
+            data=excel,
+            file_name=safe_excel_filename(audience_name),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    with col_pdf:
+        st.download_button(
+            "Download klant-onepager PDF",
+            data=pdf,
+            file_name=safe_pdf_filename(audience_name),
+            mime="application/pdf",
+        )
 
 
 if __name__ == "__main__":
