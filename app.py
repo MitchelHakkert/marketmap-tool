@@ -106,6 +106,18 @@ DEFAULT_EXCLUDE_TERMS = [
     "raad van toezicht",
 ]
 
+AUDIENCE_PATTERNS = [
+    ("Zorgverkopers", ["zorgverkoop", "zorgverkoper", "adviseur zorgverkoop", "accountmanager zorgverkoop"]),
+    ("Zorginkopers", ["zorginkoop", "zorginkoper", "inkoper zorg", "zorgcontractering"]),
+    ("Medical Affairs", ["medical affairs", "medical science liaison", "msl", "medical advisor", "medical manager"]),
+    ("Qualified Persons", ["qualified person", "qp", "q.p.", "batch release"]),
+    ("Regulatory Affairs", ["regulatory affairs", "regulatory", "registratie"]),
+    ("Quality Assurance", ["quality assurance", "qa", "gmp", "quality manager"]),
+    ("Market Access", ["market access", "health economics", "heor", "reimbursement", "pricing"]),
+    ("Accountmanagers", ["accountmanager", "key account", "sales manager", "business development"]),
+    ("Inkopen", ["procurement", "inkoop", "inkoper", "buyer", "sourcing"]),
+]
+
 
 BADGES = (
     "Dit profiel heeft een LinkedIn Premium-abonnement.",
@@ -777,6 +789,34 @@ def term_hits(terms: list[str], text: str) -> list[str]:
     return hits
 
 
+def guess_audience_name(df: pd.DataFrame, fallback: str = "Profielen") -> str:
+    blob = " ".join(
+        clean(row.get(col))
+        for _, row in df.iterrows()
+        for col in ["huidig_bedrijf", "functietitel", "sector", "info_eerdere_rollen", "interesse_signalen"]
+    ).lower()
+    scores = []
+    for label, terms in AUDIENCE_PATTERNS:
+        score = sum(len(term_hits([term], blob)) for term in terms)
+        if score:
+            scores.append((score, label))
+    if scores:
+        return max(scores)[1]
+
+    learned = learned_relevance_terms(df, minimum_share=0.12)
+    if learned:
+        words = [word.capitalize() for word in learned[:2]]
+        return " ".join(words)
+    return fallback
+
+
+def safe_excel_filename(label: str) -> str:
+    label = clean(label) or "Profielen"
+    label = re.sub(r'[<>:"/\\|?*]+', "", label)
+    label = re.sub(r"\s+", " ", label).strip(" ._-")
+    return f"Market Map {label or 'Profielen'}.xlsx"
+
+
 def flag_outliers(df: pd.DataFrame, include_terms: list[str], exclude_terms: list[str]) -> pd.DataFrame:
     learned_terms = learned_relevance_terms(df)
     rows = []
@@ -1047,11 +1087,13 @@ def main() -> None:
         st.info(f"{len(remove_idx)} profiel(en) gemarkeerd voor verwijdering. Export bevat straks {len(final_df)} profielen.")
 
     st.subheader("3. Export")
+    suggested_audience = guess_audience_name(final_df)
+    audience_name = st.text_input("Naam doelgroep voor bestandsnaam", suggested_audience)
     excel = make_excel(final_df)
     st.download_button(
         "Download market mapping Excel",
         data=excel,
-        file_name="market_mapping_output.xlsx",
+        file_name=safe_excel_filename(audience_name),
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
