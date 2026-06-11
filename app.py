@@ -8,11 +8,10 @@ import re
 from typing import Iterable
 
 from docx import Document
+from docx.enum.section import WD_ORIENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Inches, Pt, RGBColor
 import pandas as pd
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib.utils import ImageReader
-from reportlab.pdfgen import canvas
 import streamlit as st
 
 
@@ -824,144 +823,155 @@ def safe_excel_filename(label: str) -> str:
     return f"Market Map {label or 'Profielen'}.xlsx"
 
 
-def safe_pdf_filename(label: str) -> str:
+def safe_docx_filename(label: str) -> str:
     label = clean(label) or "Profielen"
     label = re.sub(r'[<>:"/\\|?*]+', "", label)
     label = re.sub(r"\s+", " ", label).strip(" ._-")
-    return f"Market Map {label or 'Profielen'} - Onepager.pdf"
+    return f"Market Map {label or 'Profielen'} - Onepager bewerkbaar.docx"
 
 
-def make_onepager_pdf(df: pd.DataFrame, audience_name: str = "") -> bytes:
-    output = BytesIO()
-    page_width, page_height = landscape(A4)
-    pdf = canvas.Canvas(output, pagesize=landscape(A4))
-
-    dark_blue = colors.HexColor("#073763")
-    mid_blue = colors.HexColor("#155E75")
-    light_blue = colors.HexColor("#EAF4FA")
-    green = colors.HexColor("#92D050")
-    grey = colors.HexColor("#4B5563")
-    border = colors.HexColor("#D9E2EA")
-
-    margin = 28
-    header_height = 142
-    if HEADER_IMAGE_PATH.exists():
-        image = ImageReader(str(HEADER_IMAGE_PATH))
-        pdf.drawImage(image, 0, page_height - header_height, width=page_width, height=header_height, preserveAspectRatio=True, anchor="n")
-    else:
-        pdf.setFillColor(dark_blue)
-        pdf.rect(0, page_height - header_height, page_width, header_height, fill=1, stroke=0)
-        pdf.setFillColor(colors.white)
-        pdf.setFont("Helvetica-Bold", 24)
-        pdf.drawCentredString(page_width / 2, page_height - 75, "Derks & Derks")
-    pdf.setFillColor(green)
-    pdf.rect(0, page_height - header_height - 10, page_width, 10, fill=1, stroke=0)
-
-    title_y = page_height - header_height - 42
-    title = f"Market Map {clean(audience_name) or 'Profielen'}"
-    pdf.setFillColor(dark_blue)
-    pdf.setFont("Helvetica-Bold", 22)
-    pdf.drawString(margin, title_y, title)
-    pdf.setFillColor(grey)
-    pdf.setFont("Helvetica", 9)
-    pdf.drawString(margin, title_y - 15, "Kernbeeld van de profielen in deze mapping")
-
+def onepager_stats(df: pd.DataFrame) -> dict[str, object]:
     total = max(len(df), 1)
     tenure = pd.to_numeric(df["tenure_huidige_rol_jaren"], errors="coerce")
-    avg_tenure = tenure.mean()
-    top_company = df["huidig_bedrijf"].replace("", "Onbekend").fillna("Onbekend").value_counts().index[0] if len(df) else "-"
-    top_sector = df["sector"].replace("", "Overig").fillna("Overig").value_counts().index[0] if len(df) else "-"
-
-    def draw_card(x: float, y: float, w: float, h: float, label: str, value: str) -> None:
-        pdf.setFillColor(mid_blue)
-        pdf.roundRect(x, y + h - 22, w, 22, 3, fill=1, stroke=0)
-        pdf.setFillColor(colors.white)
-        pdf.setFont("Helvetica-Bold", 8)
-        pdf.drawCentredString(x + w / 2, y + h - 15, label)
-        pdf.setFillColor(light_blue)
-        pdf.roundRect(x, y, w, h - 22, 3, fill=1, stroke=1)
-        pdf.setStrokeColor(border)
-        pdf.setFillColor(dark_blue)
-        pdf.setFont("Helvetica-Bold", 15)
-        clipped = value if len(value) <= 22 else value[:21] + "..."
-        pdf.drawCentredString(x + w / 2, y + 18, clipped)
-
-    card_y = title_y - 72
-    card_w = 120
-    gap = 14
-    draw_card(margin, card_y, card_w, 56, "Profielen", str(len(df)))
-    draw_card(margin + (card_w + gap), card_y, card_w, 56, "Gem. tenure", "" if pd.isna(avg_tenure) else f"{avg_tenure:.1f} jaar")
-    draw_card(margin + 2 * (card_w + gap), card_y, card_w, 56, "Topbedrijf", str(top_company))
-    draw_card(margin + 3 * (card_w + gap), card_y, card_w, 56, "Topsector", str(top_sector))
-
-    def draw_table(x: float, y: float, title_text: str, rows: list[tuple[str, int, float]], col_widths: tuple[int, int, int]) -> None:
-        row_h = 17
-        table_w = sum(col_widths)
-        pdf.setFillColor(dark_blue)
-        pdf.rect(x, y, table_w, row_h, fill=1, stroke=0)
-        pdf.setFillColor(colors.white)
-        pdf.setFont("Helvetica-Bold", 9)
-        pdf.drawString(x + 5, y + 5, title_text)
-        header_y = y - row_h
-        pdf.setFillColor(colors.HexColor("#DDEBF7"))
-        pdf.rect(x, header_y, table_w, row_h, fill=1, stroke=1)
-        pdf.setFillColor(colors.black)
-        pdf.setFont("Helvetica-Bold", 7)
-        headers = ["categorie", "aantal", "%"]
-        cx = x
-        for header, width in zip(headers, col_widths):
-            pdf.drawString(cx + 4, header_y + 5, header)
-            cx += width
-        pdf.setFont("Helvetica", 7)
-        for idx, (label, count, pct) in enumerate(rows):
-            row_y = header_y - row_h * (idx + 1)
-            pdf.setFillColor(colors.white)
-            pdf.rect(x, row_y, table_w, row_h, fill=1, stroke=1)
-            pdf.setFillColor(colors.black)
-            clipped = str(label) if len(str(label)) <= 28 else str(label)[:27] + "..."
-            pdf.drawString(x + 4, row_y + 5, clipped)
-            pdf.drawRightString(x + col_widths[0] + col_widths[1] - 5, row_y + 5, str(count))
-            pdf.drawRightString(x + table_w - 5, row_y + 5, f"{pct:.1%}")
-
     edu_counts = df["hoogst_afgeronde_opleiding"].replace("", "Overig").fillna("Overig").value_counts()
-    education_rows = [(label, int(edu_counts.get(label, 0)), int(edu_counts.get(label, 0)) / total) for label in EDUCATION_ORDER]
     company_counts = df["huidig_bedrijf"].replace("", "Onbekend").fillna("Onbekend").value_counts().head(5)
-    company_rows = [(label, int(count), int(count) / total) for label, count in company_counts.items()]
     sector_counts = df["sector"].replace("", "Overig").fillna("Overig").value_counts().head(5)
-    sector_rows = [(label, int(count), int(count) / total) for label, count in sector_counts.items()]
-    tenure_rows = [
-        ("<1 jaar", int(((tenure >= 0) & (tenure < 1)).sum()), int(((tenure >= 0) & (tenure < 1)).sum()) / total),
-        ("1-2 jaar", int(((tenure >= 1) & (tenure <= 2)).sum()), int(((tenure >= 1) & (tenure <= 2)).sum()) / total),
-        ("3-5 jaar", int(((tenure >= 3) & (tenure <= 5)).sum()), int(((tenure >= 3) & (tenure <= 5)).sum()) / total),
-        ("6-10 jaar", int(((tenure >= 6) & (tenure <= 10)).sum()), int(((tenure >= 6) & (tenure <= 10)).sum()) / total),
-        ("10+ jaar", int((tenure > 10).sum()), int((tenure > 10).sum()) / total),
-        ("Onbekend", int(tenure.isna().sum()), int(tenure.isna().sum()) / total),
+
+    def rows_from_counts(counts: pd.Series, labels: list[str] | None = None) -> list[tuple[str, int, float]]:
+        if labels:
+            return [(label, int(counts.get(label, 0)), int(counts.get(label, 0)) / total) for label in labels]
+        return [(str(label), int(count), int(count) / total) for label, count in counts.items()]
+
+    tenure_buckets = [
+        ("<1 jaar", int(((tenure >= 0) & (tenure < 1)).sum())),
+        ("1-2 jaar", int(((tenure >= 1) & (tenure <= 2)).sum())),
+        ("3-5 jaar", int(((tenure >= 3) & (tenure <= 5)).sum())),
+        ("6-10 jaar", int(((tenure >= 6) & (tenure <= 10)).sum())),
+        ("10+ jaar", int((tenure > 10).sum())),
+        ("Onbekend", int(tenure.isna().sum())),
     ]
+    return {
+        "total": len(df),
+        "avg_tenure": tenure.mean(),
+        "top_company": company_counts.index[0] if len(company_counts) else "-",
+        "top_sector": sector_counts.index[0] if len(sector_counts) else "-",
+        "education_rows": rows_from_counts(edu_counts, EDUCATION_ORDER),
+        "company_rows": rows_from_counts(company_counts),
+        "sector_rows": rows_from_counts(sector_counts),
+        "tenure_rows": [(label, count, count / total) for label, count in tenure_buckets],
+    }
 
-    table_y = card_y - 36
-    draw_table(margin, table_y, "Opleiding", education_rows, (112, 36, 42))
-    draw_table(margin + 220, table_y, "Top bedrijven", company_rows, (126, 36, 42))
-    draw_table(margin, table_y - 160, "Tenure", tenure_rows, (112, 36, 42))
-    draw_table(margin + 220, table_y - 160, "Top sectoren", sector_rows, (126, 36, 42))
 
-    note_x = margin + 460
-    note_y = table_y
-    note_w = page_width - note_x - margin
-    note_h = 310
-    pdf.setFillColor(dark_blue)
-    pdf.rect(note_x, note_y, note_w, 18, fill=1, stroke=0)
-    pdf.setFillColor(colors.white)
-    pdf.setFont("Helvetica-Bold", 9)
-    pdf.drawString(note_x + 5, note_y + 5, "Duiding / klantnotitie")
-    pdf.setFillColor(colors.HexColor("#F7FBF2"))
-    pdf.setStrokeColor(green)
-    pdf.rect(note_x, note_y - note_h, note_w, note_h, fill=1, stroke=1)
-    pdf.setFillColor(grey)
-    pdf.setFont("Helvetica", 8)
-    pdf.drawString(note_x + 9, note_y - 18, "Vul hier zelf de belangrijkste interpretatie, nuance of klantboodschap in.")
+def make_onepager_docx(df: pd.DataFrame, audience_name: str = "") -> bytes:
+    stats = onepager_stats(df)
+    doc = Document()
+    section = doc.sections[0]
+    section.orientation = WD_ORIENT.LANDSCAPE
+    section.page_width = Inches(11.69)
+    section.page_height = Inches(8.27)
+    section.top_margin = Inches(0)
+    section.bottom_margin = Inches(0.25)
+    section.left_margin = Inches(0)
+    section.right_margin = Inches(0)
 
-    pdf.showPage()
-    pdf.save()
+    styles = doc.styles
+    styles["Normal"].font.name = "Arial"
+    styles["Normal"].font.size = Pt(9)
+
+    if HEADER_IMAGE_PATH.exists():
+        p = doc.add_paragraph()
+        p.paragraph_format.space_after = Pt(0)
+        p.paragraph_format.space_before = Pt(0)
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.add_run().add_picture(str(HEADER_IMAGE_PATH), width=section.page_width)
+
+    title = doc.add_paragraph()
+    title.paragraph_format.left_indent = Inches(0.35)
+    title.paragraph_format.space_before = Pt(8)
+    title.paragraph_format.space_after = Pt(0)
+    run = title.add_run(f"Market Map {clean(audience_name) or 'Profielen'}")
+    run.bold = True
+    run.font.size = Pt(20)
+    run.font.color.rgb = RGBColor(7, 55, 99)
+
+    subtitle = doc.add_paragraph()
+    subtitle.paragraph_format.left_indent = Inches(0.35)
+    subtitle.paragraph_format.space_after = Pt(6)
+    sub_run = subtitle.add_run("Kernbeeld van de profielen in deze mapping")
+    sub_run.font.size = Pt(9)
+    sub_run.font.color.rgb = RGBColor(75, 85, 99)
+
+    def shade_cell(cell, fill: str) -> None:
+        tc_pr = cell._tc.get_or_add_tcPr()
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        shd = OxmlElement("w:shd")
+        shd.set(qn("w:fill"), fill)
+        tc_pr.append(shd)
+
+    cards = doc.add_table(rows=2, cols=4)
+    cards.autofit = True
+    labels = ["Profielen", "Gem. tenure", "Topbedrijf", "Topsector"]
+    avg = stats["avg_tenure"]
+    values = [
+        str(stats["total"]),
+        "" if pd.isna(avg) else f"{avg:.1f} jaar",
+        str(stats["top_company"]),
+        str(stats["top_sector"]),
+    ]
+    for col, label in enumerate(labels):
+        cell = cards.cell(0, col)
+        shade_cell(cell, "155E75")
+        r = cell.paragraphs[0].add_run(label)
+        r.bold = True
+        r.font.color.rgb = RGBColor(255, 255, 255)
+        cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        value_cell = cards.cell(1, col)
+        shade_cell(value_cell, "EAF4FA")
+        vr = value_cell.paragraphs[0].add_run(values[col])
+        vr.bold = True
+        vr.font.size = Pt(14)
+        vr.font.color.rgb = RGBColor(7, 55, 99)
+        value_cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    doc.add_paragraph()
+    layout = doc.add_table(rows=1, cols=3)
+    left, middle, right = layout.rows[0].cells
+
+    def add_small_table(cell, heading: str, rows: list[tuple[str, int, float]]) -> None:
+        p = cell.add_paragraph()
+        p.paragraph_format.space_after = Pt(2)
+        hr = p.add_run(heading)
+        hr.bold = True
+        hr.font.color.rgb = RGBColor(7, 55, 99)
+        table = cell.add_table(rows=1, cols=3)
+        hdr = table.rows[0].cells
+        for idx, text in enumerate(["categorie", "aantal", "%"]):
+            hdr[idx].text = text
+            shade_cell(hdr[idx], "DDEBF7")
+        for label, count, pct in rows:
+            row_cells = table.add_row().cells
+            row_cells[0].text = str(label)
+            row_cells[1].text = str(count)
+            row_cells[2].text = f"{pct:.1%}"
+
+    add_small_table(left, "Opleiding", stats["education_rows"])
+    add_small_table(left, "Tenure", stats["tenure_rows"])
+    add_small_table(middle, "Top bedrijven", stats["company_rows"])
+    add_small_table(middle, "Top sectoren", stats["sector_rows"])
+
+    note_title = right.add_paragraph()
+    nr = note_title.add_run("Duiding / klantnotitie")
+    nr.bold = True
+    nr.font.color.rgb = RGBColor(7, 55, 99)
+    note = right.add_table(rows=1, cols=1)
+    note_cell = note.cell(0, 0)
+    shade_cell(note_cell, "F7FBF2")
+    note_cell.text = "Vul hier zelf de belangrijkste interpretatie, nuance of klantboodschap in.\n\n\n\n\n\n\n\n\n\n\n\n"
+
+    output = BytesIO()
+    doc.save(output)
     return output.getvalue()
 
 
@@ -1338,10 +1348,10 @@ def main() -> None:
     st.subheader("3. Export")
     suggested_audience = guess_audience_name(final_df)
     audience_name = st.text_input("Naam doelgroep voor bestandsnaam", suggested_audience)
-    st.caption("De download bevat tab 1 Profielen, tab 2 Samenvatting en tab 3 One-pager.")
+    st.caption("Download de bewerkbare analyse-Excel of een bewerkbare Word-onepager voor klantduiding.")
     excel = make_excel(final_df, audience_name)
-    pdf = make_onepager_pdf(final_df, audience_name)
-    col_excel, col_pdf = st.columns(2)
+    docx_onepager = make_onepager_docx(final_df, audience_name)
+    col_excel, col_docx = st.columns(2)
     with col_excel:
         st.download_button(
             "Download market mapping Excel",
@@ -1349,12 +1359,12 @@ def main() -> None:
             file_name=safe_excel_filename(audience_name),
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-    with col_pdf:
+    with col_docx:
         st.download_button(
-            "Download klant-onepager PDF",
-            data=pdf,
-            file_name=safe_pdf_filename(audience_name),
-            mime="application/pdf",
+            "Download bewerkbare onepager Word",
+            data=docx_onepager,
+            file_name=safe_docx_filename(audience_name),
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
 
 
