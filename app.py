@@ -710,33 +710,118 @@ def classify_sector(row: pd.Series, sector_buckets: list[str], sector_rules: dic
     return "Overig" if "Overig" in sector_buckets else sector_buckets[-1]
 
 
+OUTLIER_STOPWORDS = {
+    "account",
+    "accountmanager",
+    "adviseur",
+    "alleen",
+    "assistant",
+    "bedrijf",
+    "bij",
+    "business",
+    "consultant",
+    "coordinator",
+    "current",
+    "department",
+    "director",
+    "ervaring",
+    "functie",
+    "health",
+    "healthcare",
+    "huidig",
+    "manager",
+    "medewerker",
+    "nederland",
+    "netherlands",
+    "opleiding",
+    "project",
+    "senior",
+    "specialist",
+    "team",
+    "van",
+    "voor",
+    "werk",
+}
+
+
+def learned_relevance_terms(df: pd.DataFrame, minimum_share: float = 0.08) -> list[str]:
+    texts = []
+    for _, row in df.iterrows():
+        texts.append(
+            " ".join(
+                clean(row.get(col))
+                for col in ["huidig_bedrijf", "functietitel", "sector", "info_eerdere_rollen"]
+            ).lower()
+        )
+    min_count = max(3, int(len(texts) * minimum_share))
+    counts: Counter[str] = Counter()
+    for text in texts:
+        words = {
+            word
+            for word in re.findall(r"[a-zA-ZÀ-ÿ][a-zA-ZÀ-ÿ0-9\-]{3,}", text)
+            if word not in OUTLIER_STOPWORDS
+        }
+        counts.update(words)
+    return [word for word, count in counts.most_common(30) if count >= min_count]
+
+
+def term_hits(terms: list[str], text: str) -> list[str]:
+    hits = []
+    for term in terms:
+        clean_term = clean(term).lower()
+        if not clean_term:
+            continue
+        pattern = r"(?<![a-zA-ZÀ-ÿ0-9])" + re.escape(clean_term) + r"(?![a-zA-ZÀ-ÿ0-9])"
+        if re.search(pattern, text):
+            hits.append(clean_term)
+    return hits
+
+
 def flag_outliers(df: pd.DataFrame, include_terms: list[str], exclude_terms: list[str]) -> pd.DataFrame:
+    learned_terms = learned_relevance_terms(df)
     rows = []
     for idx, row in df.iterrows():
         blob = " | ".join(clean(row.get(c)) for c in STANDARD_COLUMNS).lower()
-        include_hits = [t for t in include_terms if t in blob]
-        exclude_hits = [t for t in exclude_terms if t in blob]
+        relevance_blob = " | ".join(
+            clean(row.get(c))
+            for c in ["huidig_bedrijf", "functietitel", "sector", "info_eerdere_rollen", "interesse_signalen"]
+        ).lower()
+        exclude_blob = clean(row.get("functietitel")).lower()
+        include_hits = term_hits(include_terms, relevance_blob)
+        learned_hits = term_hits(learned_terms, relevance_blob)
+        exclude_hits = term_hits(exclude_terms, exclude_blob)
+        has_sector_signal = clean(row.get("sector")).lower() not in {"", "overig", "unknown", "onbekend"}
         reasons = []
         score = 0
-        if include_terms and not include_hits:
-            score += 2
-            reasons.append("geen doelprofiel-keyword gevonden")
         if exclude_hits:
-            score += min(3, len(exclude_hits))
+            score += 2
             reasons.append("uitsluitingskeyword(s): " + ", ".join(exclude_hits[:5]))
         if not clean(row.get("huidig_bedrijf")) or not clean(row.get("functietitel")):
-            score += 1
+            score += 2
             reasons.append("bedrijf of functietitel ontbreekt")
+        if include_terms and not include_hits and not learned_hits and not has_sector_signal:
+            score += 2
+            reasons.append("geen standaard- of input-relevant woord gevonden")
+        elif include_terms and not include_hits and not has_sector_signal:
+            score += 1
+            reasons.append("geen standaarddoelwoord, maar wel inputsignaal: " + ", ".join(learned_hits[:5]))
         if score >= 2:
             rows.append(
                 {
                     "verwijderen": False,
                     "index": idx,
+                    "twijfelscore": score,
                     "naam": row.get("naam", ""),
                     "huidig_bedrijf": row.get("huidig_bedrijf", ""),
                     "functietitel": row.get("functietitel", ""),
                     "sector": row.get("sector", ""),
                     "reden": "; ".join(reasons),
+                    "locatie": row.get("locatie", ""),
+                    "tenure_huidige_rol_jaren": row.get("tenure_huidige_rol_jaren", ""),
+                    "info_eerdere_rollen": row.get("info_eerdere_rollen", ""),
+                    "hoogst_afgeronde_opleiding": row.get("hoogst_afgeronde_opleiding", ""),
+                    "interesse_signalen": row.get("interesse_signalen", ""),
+                    "activiteit": row.get("activiteit", ""),
                 }
             )
     return pd.DataFrame(rows)
@@ -918,8 +1003,43 @@ def main() -> None:
         st.success("Geen duidelijke twijfelprofielen gevonden met de huidige keywords.")
         final_df = edited_df.copy()
     else:
-        st.write("Vink profielen aan die uit de export moeten.")
-        edited_suspects = st.data_editor(suspects, use_container_width=True, hide_index=True, height=280)
+        suspects = suspects.sort_values(["twijfelscore", "naam"], ascending=[False, True]).reset_index(drop=True)
+        st.write("Vink profielen aan die uit de export moeten. Open hieronder een profiel voor extra context.")
+        review_columns = [
+            "verwijderen",
+            "twijfelscore",
+            "index",
+            "naam",
+            "huidig_bedrijf",
+            "functietitel",
+            "sector",
+            "reden",
+        ]
+        edited_suspects = st.data_editor(
+            suspects[review_columns],
+            use_container_width=True,
+            hide_index=True,
+            height=280,
+            column_config={
+                "verwijderen": st.column_config.CheckboxColumn("verwijderen"),
+                "twijfelscore": st.column_config.NumberColumn("score", width="small"),
+                "index": st.column_config.NumberColumn("rij", width="small"),
+                "reden": st.column_config.TextColumn("reden", width="large"),
+            },
+        )
+        st.caption("Profielcontext voor beoordeling")
+        for _, suspect in suspects.iterrows():
+            title = f"{suspect['naam']} - {suspect['functietitel'] or 'functie onbekend'}"
+            with st.expander(title):
+                st.write(f"**Bedrijf:** {suspect['huidig_bedrijf'] or '-'}")
+                st.write(f"**Sector:** {suspect['sector'] or '-'}")
+                st.write(f"**Locatie:** {suspect['locatie'] or '-'}")
+                st.write(f"**Tenure huidige rol:** {suspect['tenure_huidige_rol_jaren'] or '-'}")
+                st.write(f"**Eerdere rollen:** {suspect['info_eerdere_rollen'] or '-'}")
+                st.write(f"**Opleiding:** {suspect['hoogst_afgeronde_opleiding'] or '-'}")
+                st.write(f"**Interesse signalen:** {suspect['interesse_signalen'] or '-'}")
+                st.write(f"**Activiteit:** {suspect['activiteit'] or '-'}")
+                st.write(f"**Waarom twijfel:** {suspect['reden'] or '-'}")
         remove_idx = set(edited_suspects.loc[edited_suspects["verwijderen"], "index"].tolist())
         final_df = edited_df.drop(index=remove_idx).reset_index(drop=True)
         st.info(f"{len(remove_idx)} profiel(en) gemarkeerd voor verwijdering. Export bevat straks {len(final_df)} profielen.")
