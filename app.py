@@ -9,6 +9,7 @@ from typing import Iterable
 
 from docx import Document
 from docx.enum.section import WD_ORIENT
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_ROW_HEIGHT_RULE, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt, RGBColor
 import pandas as pd
@@ -869,49 +870,100 @@ def make_onepager_docx(df: pd.DataFrame, audience_name: str = "") -> bytes:
     section.orientation = WD_ORIENT.LANDSCAPE
     section.page_width = Inches(11.69)
     section.page_height = Inches(8.27)
-    section.top_margin = Inches(0)
-    section.bottom_margin = Inches(0.25)
-    section.left_margin = Inches(0)
-    section.right_margin = Inches(0)
+    section.top_margin = Inches(0.15)
+    section.bottom_margin = Inches(0.18)
+    section.left_margin = Inches(0.25)
+    section.right_margin = Inches(0.25)
 
     styles = doc.styles
     styles["Normal"].font.name = "Arial"
-    styles["Normal"].font.size = Pt(9)
+    styles["Normal"].font.size = Pt(8)
+
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    def shade_cell(cell, fill: str) -> None:
+        tc_pr = cell._tc.get_or_add_tcPr()
+        shd = tc_pr.find(qn("w:shd"))
+        if shd is None:
+            shd = OxmlElement("w:shd")
+            tc_pr.append(shd)
+        shd.set(qn("w:fill"), fill)
+
+    def set_cell_border(cell, color: str = "FFFFFF", size: str = "0") -> None:
+        tc_pr = cell._tc.get_or_add_tcPr()
+        borders = tc_pr.find(qn("w:tcBorders"))
+        if borders is None:
+            borders = OxmlElement("w:tcBorders")
+            tc_pr.append(borders)
+        for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+            tag = "w:" + edge
+            element = borders.find(qn(tag))
+            if element is None:
+                element = OxmlElement(tag)
+                borders.append(element)
+            element.set(qn("w:val"), "single")
+            element.set(qn("w:sz"), size)
+            element.set(qn("w:space"), "0")
+            element.set(qn("w:color"), color)
+
+    def set_cell_margins(cell, top: int = 70, start: int = 90, bottom: int = 70, end: int = 90) -> None:
+        tc_pr = cell._tc.get_or_add_tcPr()
+        margins = tc_pr.find(qn("w:tcMar"))
+        if margins is None:
+            margins = OxmlElement("w:tcMar")
+            tc_pr.append(margins)
+        for name, value in {"top": top, "start": start, "bottom": bottom, "end": end}.items():
+            node = margins.find(qn(f"w:{name}"))
+            if node is None:
+                node = OxmlElement(f"w:{name}")
+                margins.append(node)
+            node.set(qn("w:w"), str(value))
+            node.set(qn("w:type"), "dxa")
+
+    def set_table_borders(table, color: str = "FFFFFF", size: str = "0") -> None:
+        for row in table.rows:
+            for cell in row.cells:
+                set_cell_border(cell, color, size)
+                set_cell_margins(cell)
+
+    def style_run(run, size: int, color: tuple[int, int, int] = (31, 41, 55), bold: bool = False) -> None:
+        run.font.name = "Arial"
+        run.font.size = Pt(size)
+        run.font.color.rgb = RGBColor(*color)
+        run.bold = bold
+
+    def add_text(cell, text: str, size: int = 8, color: tuple[int, int, int] = (31, 41, 55), bold: bool = False, align=None) -> None:
+        p = cell.paragraphs[0]
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(0)
+        if align is not None:
+            p.alignment = align
+        run = p.add_run(text)
+        style_run(run, size, color, bold)
 
     if HEADER_IMAGE_PATH.exists():
         p = doc.add_paragraph()
         p.paragraph_format.space_after = Pt(0)
         p.paragraph_format.space_before = Pt(0)
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p.add_run().add_picture(str(HEADER_IMAGE_PATH), width=section.page_width)
+        p.add_run().add_picture(str(HEADER_IMAGE_PATH), width=Inches(11.15))
 
     title = doc.add_paragraph()
-    title.paragraph_format.left_indent = Inches(0.35)
-    title.paragraph_format.space_before = Pt(8)
+    title.paragraph_format.space_before = Pt(4)
     title.paragraph_format.space_after = Pt(0)
     run = title.add_run(f"Market Map {clean(audience_name) or 'Profielen'}")
-    run.bold = True
-    run.font.size = Pt(20)
-    run.font.color.rgb = RGBColor(7, 55, 99)
+    style_run(run, 18, (7, 55, 99), True)
 
     subtitle = doc.add_paragraph()
-    subtitle.paragraph_format.left_indent = Inches(0.35)
-    subtitle.paragraph_format.space_after = Pt(6)
+    subtitle.paragraph_format.space_after = Pt(4)
     sub_run = subtitle.add_run("Kernbeeld van de profielen in deze mapping")
-    sub_run.font.size = Pt(9)
-    sub_run.font.color.rgb = RGBColor(75, 85, 99)
-
-    def shade_cell(cell, fill: str) -> None:
-        tc_pr = cell._tc.get_or_add_tcPr()
-        from docx.oxml import OxmlElement
-        from docx.oxml.ns import qn
-
-        shd = OxmlElement("w:shd")
-        shd.set(qn("w:fill"), fill)
-        tc_pr.append(shd)
+    style_run(sub_run, 8, (75, 85, 99), False)
 
     cards = doc.add_table(rows=2, cols=4)
-    cards.autofit = True
+    cards.alignment = WD_TABLE_ALIGNMENT.CENTER
+    cards.autofit = False
+    set_table_borders(cards, "FFFFFF", "0")
     labels = ["Profielen", "Gem. tenure", "Topbedrijf", "Topsector"]
     avg = stats["avg_tenure"]
     values = [
@@ -923,38 +975,60 @@ def make_onepager_docx(df: pd.DataFrame, audience_name: str = "") -> bytes:
     for col, label in enumerate(labels):
         cell = cards.cell(0, col)
         shade_cell(cell, "155E75")
-        r = cell.paragraphs[0].add_run(label)
-        r.bold = True
-        r.font.color.rgb = RGBColor(255, 255, 255)
-        cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+        add_text(cell, label, 7, (255, 255, 255), True, WD_ALIGN_PARAGRAPH.CENTER)
         value_cell = cards.cell(1, col)
-        shade_cell(value_cell, "EAF4FA")
-        vr = value_cell.paragraphs[0].add_run(values[col])
-        vr.bold = True
-        vr.font.size = Pt(14)
-        vr.font.color.rgb = RGBColor(7, 55, 99)
-        value_cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        shade_cell(value_cell, "F2F7FA")
+        value_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+        add_text(value_cell, values[col], 12, (7, 55, 99), True, WD_ALIGN_PARAGRAPH.CENTER)
+    for row_idx, row in enumerate(cards.rows):
+        row.height = Inches(0.22 if row_idx == 0 else 0.34)
+        row.height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
+        for cell in row.cells:
+            cell.width = Inches(2.72)
 
-    doc.add_paragraph()
+    spacer = doc.add_paragraph()
+    spacer.paragraph_format.space_after = Pt(1)
+
     layout = doc.add_table(rows=1, cols=3)
+    layout.alignment = WD_TABLE_ALIGNMENT.CENTER
+    layout.autofit = False
+    set_table_borders(layout, "FFFFFF", "0")
     left, middle, right = layout.rows[0].cells
+    for idx, cell in enumerate((left, middle, right)):
+        shade_cell(cell, "FFFFFF")
+        set_cell_margins(cell, top=30, start=50, bottom=30, end=50)
+        cell.width = Inches(3.4 if idx < 2 else 3.85)
 
     def add_small_table(cell, heading: str, rows: list[tuple[str, int, float]]) -> None:
         p = cell.add_paragraph()
-        p.paragraph_format.space_after = Pt(2)
+        p.paragraph_format.space_before = Pt(1)
+        p.paragraph_format.space_after = Pt(1)
         hr = p.add_run(heading)
-        hr.bold = True
-        hr.font.color.rgb = RGBColor(7, 55, 99)
+        style_run(hr, 9, (7, 55, 99), True)
         table = cell.add_table(rows=1, cols=3)
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        table.autofit = False
+        set_table_borders(table, "E5EEF5", "3")
         hdr = table.rows[0].cells
+        table.rows[0].height = Inches(0.18)
+        table.rows[0].height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
         for idx, text in enumerate(["categorie", "aantal", "%"]):
-            hdr[idx].text = text
-            shade_cell(hdr[idx], "DDEBF7")
-        for label, count, pct in rows:
-            row_cells = table.add_row().cells
-            row_cells[0].text = str(label)
-            row_cells[1].text = str(count)
-            row_cells[2].text = f"{pct:.1%}"
+            shade_cell(hdr[idx], "EAF4FA")
+            set_cell_margins(hdr[idx], top=35, start=55, bottom=35, end=55)
+            add_text(hdr[idx], text, 7, (31, 41, 55), True)
+        max_rows = rows[:6]
+        for label, count, pct in max_rows:
+            row = table.add_row()
+            row.height = Inches(0.18)
+            row.height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
+            row_cells = row.cells
+            values = [str(label), str(count), f"{pct:.1%}"]
+            for idx, value in enumerate(values):
+                shade_cell(row_cells[idx], "FFFFFF")
+                set_cell_margins(row_cells[idx], top=25, start=55, bottom=25, end=55)
+                align = WD_ALIGN_PARAGRAPH.RIGHT if idx > 0 else WD_ALIGN_PARAGRAPH.LEFT
+                add_text(row_cells[idx], value, 7, (31, 41, 55), False, align)
 
     add_small_table(left, "Opleiding", stats["education_rows"])
     add_small_table(left, "Tenure", stats["tenure_rows"])
@@ -962,13 +1036,41 @@ def make_onepager_docx(df: pd.DataFrame, audience_name: str = "") -> bytes:
     add_small_table(middle, "Top sectoren", stats["sector_rows"])
 
     note_title = right.add_paragraph()
+    note_title.paragraph_format.space_before = Pt(1)
+    note_title.paragraph_format.space_after = Pt(1)
     nr = note_title.add_run("Duiding / klantnotitie")
-    nr.bold = True
-    nr.font.color.rgb = RGBColor(7, 55, 99)
+    style_run(nr, 9, (7, 55, 99), True)
     note = right.add_table(rows=1, cols=1)
+    note.autofit = False
+    note.rows[0].height = Inches(2.55)
+    note.rows[0].height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
+    set_table_borders(note, "92D050", "8")
     note_cell = note.cell(0, 0)
     shade_cell(note_cell, "F7FBF2")
-    note_cell.text = "Vul hier zelf de belangrijkste interpretatie, nuance of klantboodschap in.\n\n\n\n\n\n\n\n\n\n\n\n"
+    set_cell_margins(note_cell, top=120, start=120, bottom=120, end=120)
+    note_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+    note_p = note_cell.paragraphs[0]
+    note_p.paragraph_format.space_after = Pt(0)
+    note_run = note_p.add_run(
+        "Schrijf hier de klantduiding: wat valt op, welke segmenten zijn sterk vertegenwoordigd, en welke nuance wil je meegeven?"
+    )
+    style_run(note_run, 8, (75, 85, 99), False)
+    for _ in range(4):
+        p = note_cell.add_paragraph()
+        p.paragraph_format.space_after = Pt(0)
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    paragraph.paragraph_format.space_before = Pt(0)
+                    paragraph.paragraph_format.space_after = Pt(0)
+                for nested in cell.tables:
+                    for nested_row in nested.rows:
+                        for nested_cell in nested_row.cells:
+                            for paragraph in nested_cell.paragraphs:
+                                paragraph.paragraph_format.space_before = Pt(0)
+                                paragraph.paragraph_format.space_after = Pt(0)
 
     output = BytesIO()
     doc.save(output)
