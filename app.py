@@ -287,6 +287,11 @@ HBO_INSTITUTIONS = (
     "gerrit rietveld academie",
     "design academy eindhoven",
     "amsterdamse hogeschool voor de kunsten",
+    "ncoi",
+    "isbw",
+    "loi",
+    "nti",
+    "scheidegger",
 )
 
 WO_INSTITUTIONS = (
@@ -324,6 +329,49 @@ WO_INSTITUTIONS = (
     "wageningen universiteit",
 )
 
+MBO_INSTITUTIONS = (
+    "roc ",
+    "roc-",
+    "regionaal opleidingencentrum",
+    "alfa-college",
+    "alfa college",
+    "zadkine",
+    "menso alting",
+    "koning willem i college",
+    "horizon college",
+    "roc horizon",
+    "roc a12",
+    "mondriaan",
+    "rocmondriaan",
+    "mborijnland",
+    "mbo rijnland",
+    "nova college",
+    "deltion",
+    "summa college",
+    "vista college",
+    "gilde opleidingen",
+    "friesland college",
+    "firda",
+    "curio",
+    "noorderpoort",
+    "drenthe college",
+    "terra mbo",
+    "graafschap college",
+    "aventus",
+    "rijn ijssel",
+    "scalda",
+    "da vinci college",
+    "talland college",
+    "yuverta",
+    "sintlucas",
+    "nimeto",
+    "cibap",
+    "vakschool",
+    "de rooi pannen",
+    "middelbare hotelschool",
+    "hotelschool groningen",
+)
+
 EDUCATION_ORDER = ["PhD/PostDoc", "WO master", "WO Bachelor", "HBO", "MBO", "Overig"]
 
 
@@ -331,18 +379,25 @@ def infer_education_level(line: str) -> str:
     t = f" {clean(line).lower()} "
     is_hbo_school = any(school in t for school in HBO_INSTITUTIONS)
     is_wo_school = any(school in t for school in WO_INSTITUTIONS) and not is_hbo_school
+    is_mbo_school = any(school in t for school in MBO_INSTITUTIONS)
 
     if re.search(r"\b(phd|ph\.d|doctorate|postdoc|post-doc|postdoctoral|promotie|gepromoveerd)\b", t):
         return "PhD/PostDoc"
-    if re.search(r"\b(mbo|middelbaar beroepsonderwijs)\b", t):
+    if (
+        is_mbo_school
+        or re.search(r"\b(mbo|middelbaar beroepsonderwijs|niveau\s*[1-4]|level\s*[1-4]|mbo[- ]?niveau)\b", t)
+        or re.search(r"\b(mdgo|meao|mavo|vmbo|helpende|verzorgende\s+ig|verpleegkundige\s+niveau\s*[1-4])\b", t)
+    ):
         return "MBO"
     if is_hbo_school or re.search(r"\b(hbo|heao|hts|hbs)\b", t):
         return "HBO"
-    if re.search(r"\b(master|msc|m\.sc|ms|ma|m\.a\.|llm|m\.?b\.?a\.?|drs)\b", t):
+    if re.search(r"\b(maatschappelijk werk en dienstverlening|social work|sociaal pedagogische hulpverlening|sph|mwd)\b", t):
+        return "HBO"
+    if re.search(r"\b(master|msc|m\.sc|ms|ma|m\.a\.|llm|m\.?b\.?a\.?|drs|doctoraal)\b", t):
         return "WO master"
     if re.search(r"\b(bsc|b\.sc|ba|b\.a\.)\b", t):
         return "WO Bachelor" if is_wo_school else "HBO"
-    if re.search(r"\b(bachelor|bachelorgraad|bba|post bachelor|post-hbo|associate degree|ad)\b", t):
+    if re.search(r"\b(bachelor|bachlor|bachelorgraad|bba|post bachelor|post-hbo|associate degree|associate's degree|ad)\b", t):
         return "WO Bachelor" if is_wo_school and not is_hbo_school else "HBO"
     if is_wo_school or re.search(r"\b(wo|doctoraal)\b", t):
         return "WO master"
